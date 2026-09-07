@@ -58,6 +58,13 @@ def restrip(path, m):
                 if not m.BOILERPLATE_RE.match(p)
                 and not m.is_token_spam(p)
                 and not m.is_citation_block(p)]
+
+        # 文末 Works Cited 区是**跨段**判据（要算占比），得在按段过滤之后、
+        # 拿最终的段落列表来算，顺序和 drop_boilerplate 里保持一致。
+        cut = m.works_cited_start([ts[i] for i in keep])
+        if cut is not None:
+            keep = keep[:cut]
+
         dropped += len(ts) - len(keep)
         ts, tt = [ts[i] for i in keep], [tt[i] for i in keep]
 

@@ -60,7 +60,7 @@ ssh -p 40022 root@192.168.1.10 'cd /path/to/TypeWords && \
 
 别重新翻译（半小时以上、限流、不能并发）。只影响段落取舍的规则改动
 （`BOILERPLATE_RE` / `REFERENCE_RE` / `is_token_spam` / `is_citation_block` /
-`AUDIENCE_CUE` / `fix_c1`）用：
+`works_cited_start` / `AUDIENCE_CUE` / `fix_c1`）用：
 
 ```bash
 python3 scripts/restrip-article-dict.py /tmp/twout/en/article/*.json
@@ -75,3 +75,10 @@ python3 scripts/check-article-dict.py   /tmp/twout/en/article/*.json
 
 判断某个库还有没有模板残留，数短行占比（少于 2 个英文单词的行），
 书面文章超过 5% 就挨个看；口语库天然高一些，`Yeah.` 是真正文。
+
+一类反复出现的残留是**文末的参考文献区**，因为区块标题（"Works Cited"、
+"Journal Reference"）行太短、被 `strip_html` 的长度过滤扔了，条目行从作者姓或
+机构名起头，所有「按段落开头匹配」的规则都抓不到。现在有三条规则分别管
+MLA 全名条目（`works_cited_start`）、DOI 行（`JOURNAL_REF`）和被断句切碎的
+网址（`URL_FRAGMENT`）。发现新的一类时**先量化占多少段**再动手，
+并且一定要拿官方词库（302 篇 / 2086 段）跑一遍误报回归。

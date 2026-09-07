@@ -351,10 +351,26 @@ CITE_MARK = re.compile(
     r'|\(accessed\s+\w+\s+\d{1,2},\s+\d{4}\)'
     r'|<\s*(?:www\s*\.|https?)', re.I)
 
+# `^https?://` 那条是后来补的，起因是 Lil'Log 每篇文末的自引块：
+#     Weng, Lilian.“
+#     Harness Engineering for Self-Improvement”.
+#     Lil'Log (Jul 2026).
+#     https://lilianweng.
+#     github.
+#     io/posts/2026-07-04-harness/
+# 断句把域名按点切开，只有中间那行 'github.' 命中老规则（'io/...' 那行也命中），
+# 片段占比 2/6 = 0.33 —— 看着够了，但 **'https://lilianweng.' 这行不算片段**，
+# 而正是它把占比压到了阈值附近。ai-reading 13 篇里 7 篇有这个块，全部漏过。
+# 加上「行首就是裸 URL」之后 3/6 = 0.5，稳过阈值。
+# 误报回归：官方 302 篇 / 2086 段命中 0 段，另两个自建库（口语 / 生命科学）也是 0。
+# 注意判据是 **行首**（`^`）而不是「行内含 http」—— 正文里带网址的句子很常见
+# （实测 ai-reading 有一句正文中间放了 karpathy/autoresearch 的仓库地址），
+# 那种整行是正经句子，不该算片段。
 URL_FRAGMENT = re.compile(
     r'^\s*www\s*\.\s*$'
     r'|^\s*(?:com|org|net|edu|gov|io|ai)\s*(?:\.\s*$|/)'
-    r'|^\s*[\w-]+\s*\.\s*(?:com|org|net|edu|gov|io|ai)\b', re.I)
+    r'|^\s*[\w-]+\s*\.\s*(?:com|org|net|edu|gov|io|ai)\b'
+    r'|^\s*https?://', re.I)
 
 # "Journal Reference" 块：ScienceDaily 每篇正文后面挂的原始论文出处，形如
 #   Qingrong Li, Peini Hou, Michiko Kimoto, ... Science, 2026; 393 (6808)
@@ -381,13 +397,65 @@ def is_citation_block(p):
     return frag / len(lines) > 0.25
 
 
+# 文末的 "Works Cited" / "References" 区，MLA 全名格式：
+#     Andreas, Jacob.“Language Models, World Models, and Human Model-Building.”Mit.edu, 2024, ...
+#     Belkin, Mikhail, et al. "Reconciling modern machine-learning practice ..."
+# 又是同一个失败模式：区块标题（"Works Cited"）行太短、被 strip_html 的长度过滤
+# 扔了，条目行从**作者姓**起头。REFERENCE_RE 也拦不住 —— 它那条作者判据要求
+# 名字是**缩写**（`^[A-Z][\w'-]+,\s+[A-Z]\.`，即 "Wei, J."），MLA 写全名
+# （"Andreas, Jacob."）不匹配。实测 The Gradient 的 AGI Is Not Multimodal
+# 一篇 50 段里末尾 21 段全是文献，占 42%。
+#
+# **不能只靠单段判据**，这是关键：正文里带 `(Lin et al. 2021)` 这种行内引用
+# 完全正常。实测同一个库里 Extrinsic Hallucinations 末尾 7 段是「benchmark 逐个
+# 介绍」，每段都以 `TruthfulQA ( Lin et al. 2021 ) is designed to ...` 起头，
+# 段段命中单段判据，却是**该留的好正文**。所以判据是三重的：
+#   1. 位置：只看**文末**（`^`/tail），Works Cited 不会出现在中间；
+#   2. 长度：连续区至少 8 段 —— 正好卡掉上面那 7 段的误报；
+#   3. 占比：区内 70% 以上是条目，容忍 "Designing an Intelligence ." 这种
+#      没有作者姓的零散条目（实测 21 段里有 2 段）。
+# 单段判据里**年份是必需项**：文献条目 21/21 有四位年份，正文 26 段 0/26 有。
+# 误报回归：官方 302 篇 / 2086 段命中 0 篇；口语库、生命科学库也都是 0。
+CITE_YEAR = re.compile(r'\b(?:1[89]|20)\d{2}\b')
+CITE_AUTHOR_HEAD = re.compile(r'^[“"\']?[A-Z][\w\'’-]+,\s+(?:[A-Z]|et\s+al\b)', re.M)
+CITE_ETAL = re.compile(r'\bet\s+al\.')
+
+
+def is_reference_entry(p):
+    """单段像不像文献条目。只在 works_cited_start 里用，别单独拿来删段。"""
+    if not CITE_YEAR.search(p):
+        return False
+    if CITE_AUTHOR_HEAD.search(p) or CITE_ETAL.search(p):
+        return True
+    return any(URL_FRAGMENT.match(l) for l in p.split('\n') if l.strip())
+
+
+def works_cited_start(paras, min_run=8, thresh=0.7):
+    """
+    返回文末 Works Cited 区的起始下标，没有就返回 None。
+
+    从前往后找第一个「本身是条目、且从它到文末条目占比够高」的位置，
+    这样起点会落在区块真正的第一条上（从后往前数连续串的话，中间一个
+    零散条目就会把区块截断 —— 实测只能删到 15/21 段）。
+    """
+    flags = [is_reference_entry(p) for p in paras]
+    for i, ok in enumerate(flags):
+        if not ok:
+            continue
+        n = len(paras) - i
+        if n < min_run:
+            break                    # 剩下的都不够长了，后面更不可能
+        if sum(flags[i:]) / n >= thresh:
+            return i
+    return None
+
+
 def drop_boilerplate(paras):
     """
     去掉模板残留和参考文献段落。
 
-    只按开头匹配（文献那条例外，arxiv preprint 出现在哪都是文献），
-    不做全文关键词过滤 —— 正文里正常提到 "source" 的句子不该被牵连
-    （科普文章里 "the source of the signal" 很常见）。
+    先按段过一遍规则，再单独砍文末的 Works Cited 区 —— 后者是**跨段**判据，
+    必须等段落列表定下来才能算占比。
     """
     out = []
     for p in paras:
@@ -399,7 +467,9 @@ def drop_boilerplate(paras):
         if is_citation_block(s):
             continue
         out.append(p)
-    return out
+
+    cut = works_cited_start(out)
+    return out if cut is None else out[:cut]
 
 
 def ted_transcript(url):
