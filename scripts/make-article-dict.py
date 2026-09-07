@@ -262,6 +262,48 @@ def is_token_spam(s):
     return dup / len(w) > 0.4
 
 
+# "Cite This Page" 里的 MLA / APA / Chicago 三条引用格式。
+# ScienceDaily 每篇末尾都有，实测占 life-science-read 全库 376 段里的 36 段（10%）。
+#
+# 为什么不能靠 BOILERPLATE_RE 的 "cite this page" 那条：那三段各自以**机构名**开头
+# （"University of California - San Diego. (2026, September 5). ..."），
+# 标题行才是 "Cite This Page"，而标题行短、早就被 strip_html 的长度过滤扔了。
+#
+# 判据分两半，都是实测挑出来的：
+#   1. 三种格式各自的检索短语 —— APA 的 "Retrieved <Month> <D>, <YYYY> from"、
+#      Chicago 的 "(accessed <Month> <D>, <YYYY>)"、MLA 把网址包在尖括号里
+#      （'<www.' / '<https'）。正文不会这么写。
+#   2. 网址被断句切碎后留下的**孤立域名片段行**占比 > 25%：
+#      'www.' / 'sciencedaily.' / 'com / releases / 2026 / 09 / xxx.htm'。
+#
+# 两个更宽的判据试过、都误伤：
+#   - 「段落里含 www. 或 .com/」：命中 ai-reading 5 段正经论述（正文引用网址很正常）。
+#   - 「任意单词+句点单独成行」算片段：把 TED 的 'Yeah.' 'Fantastic.' 和
+#     ai-reading 的小标题（'III. Inverting Consequentialist Reflection'）一起判掉。
+#     所以片段只认 **www. 和已知 TLD**，不认任意单词。
+# 占比而不是「有就删」也是必需的：ai-reading 有一段致谢正文末尾提了 'tagds.com'，
+# 整段删掉就冤了（实测该段片段占比 1/5，低于阈值，保住了）。
+CITE_MARK = re.compile(
+    r'retrieved\s+\w+\s+\d{1,2},\s+\d{4}\s+from'
+    r'|\(accessed\s+\w+\s+\d{1,2},\s+\d{4}\)'
+    r'|<\s*(?:www\s*\.|https?)', re.I)
+
+URL_FRAGMENT = re.compile(
+    r'^\s*www\s*\.\s*$'
+    r'|^\s*(?:com|org|net|edu|gov|io|ai)\s*(?:\.\s*$|/)'
+    r'|^\s*[\w-]+\s*\.\s*(?:com|org|net|edu|gov|io|ai)\b', re.I)
+
+
+def is_citation_block(p):
+    if CITE_MARK.search(p):
+        return True
+    lines = [l for l in p.split('\n') if l.strip()]
+    if len(lines) < 2:
+        return False
+    frag = sum(1 for l in lines if URL_FRAGMENT.match(l))
+    return frag / len(lines) > 0.25
+
+
 def drop_boilerplate(paras):
     """
     去掉模板残留和参考文献段落。
@@ -276,6 +318,8 @@ def drop_boilerplate(paras):
         if BOILERPLATE_RE.match(s) or REFERENCE_RE.search(s):
             continue
         if PDF_META_RE.search(s) or is_token_spam(s):
+            continue
+        if is_citation_block(s):
             continue
         out.append(p)
     return out

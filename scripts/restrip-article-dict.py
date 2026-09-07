@@ -55,7 +55,9 @@ def restrip(path, m):
             continue
         total += len(ts)
         keep = [i for i, p in enumerate(ts)
-                if not m.BOILERPLATE_RE.match(p) and not m.is_token_spam(p)]
+                if not m.BOILERPLATE_RE.match(p)
+                and not m.is_token_spam(p)
+                and not m.is_citation_block(p)]
         dropped += len(ts) - len(keep)
         a['text'] = '\n\n'.join(ts[i] for i in keep)
         a['textTranslate'] = '\n\n'.join(tt[i] for i in keep)
