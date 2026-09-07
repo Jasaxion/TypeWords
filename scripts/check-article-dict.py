@@ -93,4 +93,7 @@ if __name__ == '__main__':
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(2)
-    sys.exit(0 if all(check(p) for p in sys.argv[1:]) else 1)
+    # 不能写 all(check(p) for p in ...) —— all() 短路，第一个文件不合格
+    # 后面的就不检查了，看起来「只有一个有问题」。要全部检查完再决定退出码。
+    results = [check(p) for p in sys.argv[1:]]
+    sys.exit(0 if all(results) else 1)
