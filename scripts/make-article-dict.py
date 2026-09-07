@@ -176,6 +176,8 @@ REFERENCE_RE = re.compile(
     r'|^[A-Z][a-zA-Z\'`-]+,\s+[A-Z]\.'                  # Wei, J.
     r'|arxiv\s*preprint\s*arxiv:'                        # 正文极少这样写
     r'|^@\w+\{'                                          # BibTeX 块（博客常放「如何引用本文」）
+    r'|^\s*\w+\s*=\s*\{'                                 # BibTeX 的字段行：title = {...}
+    r'|\\url\{'                                          # 同上，howpublished = {\url{...}}
     r'|^\w+,\s+\w+\.\s+"[^"]+"\.\s',                     # Weng, Lilian. "Why We Think".
     re.I)
 
@@ -474,25 +476,37 @@ def split_sentences(paragraph):
         else:
             sentences.append((lead, seg))
 
-    merged = []
-    for lead, seg in sentences:
-        fragment = (not re.search(r'[A-Za-z]{2,}', seg)   # '.'、')'、'" .'
-                    or CITATION_MARK_RE.fullmatch(seg))   # '( Link )'、'[4]'
-        if merged and fragment:
-            merged[-1] = (merged[-1][0], merged[-1][1] + lead + seg)
-        # 句末标点在引号里面（口语转写最常见）：`...struggle?" And I thought`
-        # 被切成 `...struggle?` 和 `" And I thought`。那个收尾引号属于上一句，
-        # 留在行首会让用户先打一个莫名其妙的引号。实测 TED 里有 117 处。
-        elif merged and re.match(r'^["“”]\s*\S', seg):
-            merged[-1] = (merged[-1][0], merged[-1][1] + seg[0])
-            merged.append((lead, seg[1:].lstrip()))
-        else:
-            merged.append((lead, seg))
+    merged = merge_fragments(sentences)
     # 段首就是碎片时上面没得可并，往后并
     if len(merged) > 1 and not re.search(r'[A-Za-z]{2,}', merged[0][1]):
         merged[1] = (merged[0][0], merged[0][1] + merged[1][0] + merged[1][1])
         merged.pop(0)
     return [s for _, s in merged]
+
+
+def merge_fragments(sentences):
+    """
+    把碎片并回上一句。输入输出都是 [(前导空白, 句子)]。
+
+    单独抽出来是因为要跑两次：断句之后一次，`split_long` 切完长句之后再一次。
+    切长句可能正好在碎片前面下刀，把已经并好的 `... sense. [14]` 重新拆成
+    `... sense.` 和 `[14]` —— 实测 ai-reading 里就有一处。
+    """
+    out = []
+    for lead, seg in sentences:
+        fragment = (not re.search(r'[A-Za-z]{2,}', seg)   # '.'、')'、'" .'
+                    or CITATION_MARK_RE.fullmatch(seg))   # '( Link )'、'[4]'
+        if out and fragment:
+            out[-1] = (out[-1][0], out[-1][1] + lead + seg)
+        # 句末标点在引号里面（口语转写最常见）：`...struggle?" And I thought`
+        # 被切成 `...struggle?` 和 `" And I thought`。那个收尾引号属于上一句，
+        # 留在行首会让用户先打一个莫名其妙的引号。实测 TED 里有 117 处。
+        elif out and re.match(r'^["“”]\s*\S', seg):
+            out[-1] = (out[-1][0], out[-1][1] + seg[0])
+            out.append((lead, seg[1:].lstrip()))
+        else:
+            out.append((lead, seg))
+    return out
 
 
 def split_long(s, limit):
@@ -552,11 +566,13 @@ def build_text(paragraphs, max_sentence_chars=0, strip_math=False):
                     kept.append(r)
             sents = kept
         if max_sentence_chars:
-            # 超长句子（PDF 里常见）拆开，不然一行要打好几百字符
+            # 超长句子（PDF 里常见）拆开，不然一行要打好几百字符。
+            # 切完再并一次碎片：下刀点可能正好在 `[14]` 前面，把断句时
+            # 已经并好的碎片重新拆出来。
             out = []
             for s in sents:
                 out.extend(split_long(s, max_sentence_chars))
-            sents = out
+            sents = [s for _, s in merge_fragments([(' ', s) for s in out])]
         if sents:
             sections.append(sents)
 
