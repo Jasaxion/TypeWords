@@ -59,7 +59,7 @@ ssh -p 40022 root@192.168.1.10 'cd /path/to/TypeWords && \
 ## 改了过滤规则怎么办
 
 别重新翻译（半小时以上、限流、不能并发）。只影响段落取舍的规则改动
-（`BOILERPLATE_RE` / `REFERENCE_RE` / `is_token_spam` / `fix_c1`）用：
+（`BOILERPLATE_RE` / `REFERENCE_RE` / `is_token_spam` / `is_citation_block` / `fix_c1`）用：
 
 ```bash
 python3 scripts/restrip-article-dict.py /tmp/twout/en/article/*.json
@@ -68,3 +68,9 @@ python3 scripts/check-article-dict.py   /tmp/twout/en/article/*.json
 
 它从 `text` 和 `textTranslate` 删掉**同一批下标**。影响切句的改动
 （`split_sentences`、`--max-sentence-chars`）它做不到，得按上面的命令重建。
+
+清理完**要重新部署**：`deploy-article-dicts.py` 覆盖 NAS 上那份，
+否则本地干净、线上还是脏的（`dicts/` 是运行时挂载，不用 `--rebuild`）。
+
+判断某个库还有没有模板残留，数短行占比（少于 2 个英文单词的行），
+书面文章超过 5% 就挨个看；口语库天然高一些，`Yeah.` 是真正文。
