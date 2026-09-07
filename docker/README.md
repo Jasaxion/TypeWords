@@ -5,6 +5,7 @@
 ```bash
 cp docker/env.example .env        # 按需修改端口和站点地址
 mkdir -p data                     # 数据目录，必须先建，见下方说明
+python3 scripts/fetch-dicts.py    # 可选：下载官方全部词典（约 430MB）
 docker compose up -d --build      # 构建并启动
 ```
 
@@ -91,6 +92,44 @@ DATA_DIR=/volume1/docker/typewords-data
 服务器存储已经支持了：两边都访问同一个地址，靠 `updated_at` 比较新旧，
 不会互相覆盖。要跨网络用，就在设置页额外配 Supabase（可选，与本方案不冲突）。
 
+## 词典：用上官方的全部词库
+
+镜像里只内置了 CET-4 和新概念英语 1（跟着上游仓库走）。官方站点的
+241 个词库 + 4 篇文章托管在 `files.typewords.cc`，数据和内置的那份完全一致
+（`CET4_T.json` md5 相同），可以直接下载来用：
+
+```bash
+python3 scripts/fetch-dicts.py          # 全部，约 430MB
+```
+
+不想全下，可以按分类或体积挑：
+
+```bash
+python3 scripts/fetch-dicts.py --list                       # 先看看都有什么
+python3 scripts/fetch-dicts.py --category 中国考试 国际考试   # 只要这些分类
+python3 scripts/fetch-dicts.py --max-size 3                 # 只要小于 3MB 的
+```
+
+分类有：`中国考试`、`国际考试`、`青少年英语`、`代码练习`。
+脚本可以反复运行，已下好的会跳过，中断了直接重跑即可。
+
+下完之后**需要重新构建镜像**：
+
+```bash
+docker compose up -d --build
+```
+
+为什么要重新构建 —— 词典数据本身是运行时挂载的（`./dicts`，改完重启就行），
+但词典**清单** `public/list/*.json` 不行：nitro 的静态资源索引在构建时生成，
+里面记着每个文件的体积，运行时替换同名文件会被按旧体积截断。
+所以脚本会更新 `public/list/`，那部分必须走构建。
+
+之后再补充词典（比如先只下了四六级，后来想加雅思），如果清单没变化，
+只要 `docker compose restart` 就够了。
+
+数据放在 `./dicts`，想换位置改 `.env` 的 `DICTS_DIR`。
+目录不存在或为空时自动回落到内置的两个词典，不影响启动。
+
 ## 两个构建目标
 
 `Dockerfile` 里有两个 target，共用同一套依赖和构建层：
@@ -124,6 +163,8 @@ docker compose ps                 # 看状态和健康检查
 - `NUXT_APP_BASE_URL` 只在部署到子路径时需要（如 `/typewords/`）。
   存储接口用 `withAppBaseURL()` 拼地址，子路径下会自动变成 `/typewords/api/storage/:key`。
 - `DATA_DIR` 是宿主机上的数据目录，默认 `./data`。
+- `DICTS_DIR` 是宿主机上的词典目录，默认 `./dicts`（见上文「词典」）。
+  容器内以只读方式挂载到 `/app/dicts`，对应 `DICTS_PATH`。
 - `PUID` / `PGID` 是容器内的运行身份，必须能写入 `DATA_DIR`（见上文「目录权限」）。
 - `STORAGE_PATH` 是**容器内**的数据目录，默认 `/app/localdata`，
   一般不用改；真要改就得同步改 compose 里的挂载点右侧。
