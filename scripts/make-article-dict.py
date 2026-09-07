@@ -107,6 +107,27 @@ def fetch(url, timeout=60, retries=3, binary=False):
     raise RuntimeError(f'请求失败 {url}: {last}')
 
 
+# cp1252 被当成 latin-1 塞进 utf-8 留下的残渣。U+0080~U+009F 是 C1 控制字符，
+# 正常文本里根本不该出现，出现就一定是这种错误编码 —— 按 cp1252 还原回去。
+#
+# 实测 ScienceDaily：页面本身是**合法 utf-8**（0xC2 0x97），但里面那个码位是
+# U+0097，也就是 cp1252 的 em dash 被当字符存了进去。所以按声明的 utf-8 解码
+# 完全正确，错在源站，解码层查不出来。
+#
+# 这不只是「显示成乱码」那么无害：ScienceDaily 页尾"相关报道"每条形如
+# "Mar. 3, 2022 — 摘要..."，BOILERPLATE_RE 靠那个破折号认它。破折号变成
+# U+0097 就匹配不上，于是每篇文章尾部混进 6 段截断的摘要（实测占全库 16%），
+# 而且都以 "..." 结尾 —— 不是正文，练打字没意义。
+C1_MOJIBAKE = re.compile(r'[-]')
+
+
+def fix_c1(text):
+    if not C1_MOJIBAKE.search(text):
+        return text
+    return C1_MOJIBAKE.sub(
+        lambda m: bytes([ord(m.group())]).decode('cp1252', 'replace'), text)
+
+
 # ---------------------------------------------------------------- 正文抽取
 
 def strip_html(raw):
@@ -133,7 +154,7 @@ def strip_html(raw):
     # 块级标签转成段落分隔符，行内标签直接去掉
     raw = re.sub(r'<(br|/p|/div|/h[1-6]|/li|/tr|/blockquote)\s*/?>', '\n\n', raw, flags=re.I)
     raw = re.sub(r'<[^>]+>', ' ', raw)
-    text = html.unescape(raw)
+    text = fix_c1(html.unescape(raw))
 
     # 逐段清理：合并空白，丢掉过短的（导航残留、版权行之类）
     paras = []
