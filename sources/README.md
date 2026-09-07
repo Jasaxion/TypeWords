@@ -34,3 +34,8 @@ python3 $S --name "生命科学科普" --en-name life-science-read --category �
 
 `--no-manifest` 是必须的：仓库里的 `public/list/article.json` 只是上游的占位文件，
 真正的清单在 NAS 上。详见 `~/.claude/skills/typewords-article/SKILL.md`。
+
+篇数/句数会随过滤规则变化，**不要把某次的数字当成基准** ——
+清单里的 `length` 一律由 `scripts/deploy-article-dicts.py` 从生成的 json 现读。
+建完先跑 `python3 scripts/check-article-dict.py /tmp/twout/en/article/*.json`，
+非 0 就别传。
