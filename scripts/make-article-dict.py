@@ -356,9 +356,23 @@ URL_FRAGMENT = re.compile(
     r'|^\s*(?:com|org|net|edu|gov|io|ai)\s*(?:\.\s*$|/)'
     r'|^\s*[\w-]+\s*\.\s*(?:com|org|net|edu|gov|io|ai)\b', re.I)
 
+# "Journal Reference" 块：ScienceDaily 每篇正文后面挂的原始论文出处，形如
+#   Qingrong Li, Peini Hou, Michiko Kimoto, ... Science, 2026; 393 (6808)
+#   DOI: 10.1126/science.aea3075
+# 和 "Cite This Page" 一样躲过了 BOILERPLATE_RE（标题行 "Journal Reference"
+# 太短、被长度过滤扔了，正文行从**作者名**起头），也躲过 CITE_MARK
+# （里面没有 "retrieved from" 也没有裸 URL）。实测 life-science-read 340 段里
+# 有 13 段、ai-reading 1147 段里有 1 段。这些是作者列表加期刊卷号，练打字没意义，
+# DOI 尾巴还会被断句切出 'aea3075' 这种孤立行。
+#
+# 判据只用 DOI 标记，不去猜「像不像作者列表」：`\bDOI:\s*10.` 和 `doi.org/10.`
+# 在正文里根本不会出现（拿官方 NCE_3 / NCE_4 共 107 篇做回归，命中 0 段）。
+# 「逗号分隔的人名占多数」这类形状判据试过，会误伤正文里的致谢和列举。
+JOURNAL_REF = re.compile(r'\bdoi:\s*10\.\d{4,}|\bdoi\.org/10\.', re.I)
+
 
 def is_citation_block(p):
-    if CITE_MARK.search(p):
+    if CITE_MARK.search(p) or JOURNAL_REF.search(p):
         return True
     lines = [l for l in p.split('\n') if l.strip()]
     if len(lines) < 2:
