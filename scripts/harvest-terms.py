@@ -307,8 +307,10 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or '.', exist_ok=True)
     with open(args.output, 'w', encoding='utf-8') as f:
         f.write(f'# {args.source} {" ".join(args.query)}\n')
+        # 头两行是重建这份词表的全部参数 —— 想扩充/复现时照抄就行
         f.write(f'# 按词频降序，取前 {len(picked)} 个；'
-                f'排除通用高频前 {args.skip_top} 名，最少出现在 {args.min_docs} 篇文档\n')
+                f'排除通用高频前 {args.skip_top} 名，最少出现在 {args.min_docs} 篇文档'
+                f'{"；已折叠屈折形(-s)" if args.fold_plurals else ""}\n')
         for w, c, df in picked:
             f.write(f'{w}\n')
 
