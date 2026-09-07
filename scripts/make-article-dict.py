@@ -204,24 +204,41 @@ def is_token_spam(s):
         <EOS> <EOS> <EOS> <pad> <pad> <pad> at layer 5 of 6
     语法上不成句，打起来也纯属折磨手指。
 
-    判据是**连续**重复，不是词频。一开始我按「最高频词占比 > 0.3」判，
-    结果 TED 里 15 句好句子被误删 —— 排比和强调恰恰是口语的特征：
+    判据是「参与连续重复的词占全段的比例」，两个更直觉的判据都试过、都错：
 
-        "I'm not thin enough, rich enough, beautiful enough, smart enough."
-        "I worked and worked, and I got lucky, and worked, and got lucky."
+    1. 「最高频词占比 > 0.3」——- 误删口语。排比和强调恰恰是口语的特征：
+           "I'm not thin enough, rich enough, beautiful enough, smart enough."
+       这些词频高但不连着出现。
 
-    这些词频很高但不连着出现，而可视化图里同一个 token 一定是挨着刷的。
-    连续 3 次以上同词，正常英文写不出来（"very very good" 到 2 次为止）。
+    2. 「有连续 3 次以上同词」—— 也误删口语，而且更隐蔽。实测 TED 那篇
+       《How to speak so that people want to listen》里的发声练习段
+           "we're going to go Ba, Ba, Ba, Ba, Ba, Ba, Ba, Ba."
+           "with exaggerated la, la, la, la, la, la, la, la, la."
+       连跑长度 8，比真正的可视化图（实测最长只有 4）还长 —— 一行练习
+       就判掉整段 22 句正经演讲。**最长连跑长度根本不区分两者。**
+
+    真正的区别是**密度**：可视化图整段都在刷同一个 token，正文只是偶尔
+    有一行。实测 1706.03762（Transformer）的 7 段图注重复占比 57%~80%，
+    上面那段 TED 是 8.2% —— 中间隔了一大截，取 0.4 作阈值。
+
+    注意这个判断是**段落级**的（只在 drop_boilerplate 里按段调用）。
+    单独一行 "Ba, Ba, Ba, Ba, Ba, Ba" 拿来判还是会算垃圾，实测三个词库
+    里没有这样的独立段落，所以不额外处理；真遇到了就是漏了一段练习音节，
+    不会牵连正文。也别想用标点区分（口语的重复带逗号）—— 图注里
+    的重复 token 同样有独立的 ',' 和 '.'，实测 7 段里 3 段如此。
     """
     w = s.split()
     if len(w) < 6:
         return False
-    run = 1
-    for a, b in zip(w, w[1:]):
-        run = run + 1 if a == b else 1
-        if run >= 3:
-            return True
-    return False
+    dup = run = 1
+    for i in range(1, len(w)):
+        if w[i] == w[i - 1]:
+            run += 1
+            # 连到第 3 个才算重复，此时把前两个一起记上
+            dup += 3 if run == 3 else (1 if run > 3 else 0)
+        else:
+            run = 1
+    return dup / len(w) > 0.4
 
 
 def drop_boilerplate(paras):
