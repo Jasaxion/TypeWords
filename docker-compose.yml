@@ -2,16 +2,20 @@
 #
 # 快速开始：
 #   cp docker/env.example .env      # 按需修改站点地址、端口
+#   mkdir -p data                   # 数据目录，必须先建（见下）
 #   docker compose up -d --build    # 构建并启动（端口 3000）
 #
 # 常用命令：
 #   docker compose logs -f          # 看日志
 #   docker compose up -d --build    # 更新代码后重新构建
-#   docker compose down             # 停止并移除容器（数据卷保留）
+#   docker compose down             # 停止并移除容器（data 目录保留）
 #
-# 数据存放：默认 SSR 模式，数据写在 typewords-data 数据卷里
+# 数据存放：默认 SSR 模式，数据写在项目下的 ./data 目录里
 # （容器内 /app/localdata）。清浏览器缓存、换浏览器、换设备都能恢复。
-# 备份就是备份这个卷，或直接用页面「设置 → 导出」下载 zip。
+# 备份就是 cp -r data 备份目录，或直接用页面「设置 → 导出」下载 zip。
+#
+# 注意 ./data 的属主：bind mount 不会像命名卷那样自动 chown，
+# 宿主机目录属主必须能被容器内的 PUID/PGID 写入，否则数据写不进去。
 
 name: typewords
 
@@ -35,15 +39,21 @@ services:
     image: typewords:ssr
     container_name: typewords
     restart: unless-stopped
+    # 以宿主机上 data 目录属主的身份运行，否则挂进来的目录写不进去。
+    # 用 `id -u`/`id -g` 查看自己的 uid/gid，填到 .env 的 PUID/PGID。
+    user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       # SSR 下 runtimeConfig 可在运行时覆盖，改这里重启即可，无需重新构建
       NUXT_PUBLIC_ORIGIN: ${ORIGIN:-http://localhost:3000}
-      # 数据目录，与下面的卷挂载点保持一致
+      # 数据目录，与下面的挂载点保持一致
       STORAGE_PATH: /app/localdata
       # 切勿设置 HOST：nitro 会把它当作监听地址，容器内会启动失败
       PORT: "3000"
     volumes:
-      - typewords-data:/app/localdata
+      # 数据直接落在项目下的 ./data，备份/查看/迁移都是普通文件操作。
+      # 启动前务必先手动建好这个目录（mkdir -p data）：目录不存在时
+      # Docker 会用 root 建出来，容器内非 root 用户将无法写入。
+      - ${DATA_DIR:-./data}:/app/localdata
     ports:
       - "${TYPEWORDS_PORT:-3000}:3000"
 
@@ -67,6 +77,3 @@ services:
     restart: unless-stopped
     ports:
       - "${TYPEWORDS_STATIC_PORT:-8080}:80"
-
-volumes:
-  typewords-data:

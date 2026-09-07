@@ -92,10 +92,13 @@ ENV NUXT_TELEMETRY_DISABLED=1
 # 数据目录，对应 nuxt.config.ts 的 nitro.storage.localdata
 ENV STORAGE_PATH=/app/localdata
 COPY --from=builder-ssr --chown=node:node /app/.output ./.output
-# 预建数据目录并交给 node 用户，避免容器以非 root 运行时写不进去
+# 预建数据目录并交给 node 用户。compose 里会把宿主机 ./data 挂到这里，
+# 那种情况下属主由宿主机目录决定（bind mount 不会自动 chown），
+# 所以 compose 用 user: 指定 PUID/PGID 来匹配。
 RUN mkdir -p /app/localdata && chown -R node:node /app/localdata
 USER node
-VOLUME ["/app/localdata"]
+# 这里不声明 VOLUME：声明后未挂载时 Docker 会创建匿名卷，
+# 与 compose 中挂 ./data 的做法冲突，也会留下一堆无主的匿名卷。
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

@@ -31,7 +31,9 @@ report.html
 .nitro
 .cache
 # 自部署时服务器端本地数据（nitro fs storage）
+# localdata 是本地 pnpm dev 的默认目录，data/ 是 docker compose 的挂载目录
 localdata
+/data/
 # Misc
 .fleet
 

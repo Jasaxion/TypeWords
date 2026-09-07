@@ -4,6 +4,7 @@
 
 ```bash
 cp docker/env.example .env        # 按需修改端口和站点地址
+mkdir -p data                     # 数据目录，必须先建，见下方说明
 docker compose up -d --build      # 构建并启动
 ```
 
@@ -11,7 +12,7 @@ docker compose up -d --build      # 构建并启动
 
 ## 数据存在哪里
 
-**默认（SSR 模式）：数据存在服务器磁盘上**，即 `typewords-data` 数据卷
+**默认（SSR 模式）：数据存在服务器磁盘上**，即项目目录下的 `./data`
 （容器内 `/app/localdata`）。清浏览器缓存、换浏览器、换设备都能恢复。
 
 浏览器里的 IndexedDB 仍然是主要读写层（保证离线可用、输入不卡），
@@ -19,7 +20,7 @@ docker compose up -d --build      # 构建并启动
 
 ```
 浏览器操作 ──→ IndexedDB ──┐
-                          ├──→ POST /api/storage/:key ──→ 服务器磁盘（数据卷）
+                          ├──→ POST /api/storage/:key ──→ ./data（宿主机目录）
 启动时 ←── 比较 updated_at ─┘   谁新用谁，不是无脑覆盖
 ```
 
@@ -32,15 +33,58 @@ docker compose up -d --build      # 构建并启动
 | `PracticeSaveWord` | 单词练习断点 |
 | `PracticeSaveArticle` | 文章练习断点 |
 
-### 备份
+都是 JSON 文本，可以直接 `cat` 查看。
+
+### 目录权限（重要）
+
+`./data` 是 bind mount，**Docker 不会像命名卷那样自动调整属主**，
+所以宿主机目录必须能被容器内的用户写入，否则数据静默写不进去
+（页面看着正常，因为浏览器那份还在，但服务器上是空的）。
+
+两件事：
+
+1. **先手动建目录**。目录不存在时 Docker 会用 root 建出来，容器内非 root
+   用户就写不进去了：
+   ```bash
+   mkdir -p data
+   ```
+
+2. **让 PUID/PGID 匹配目录属主**。查看自己的 uid/gid 并填进 `.env`：
+   ```bash
+   id -u    # -> PUID
+   id -g    # -> PGID
+   ```
+   群晖等 NAS 的普通用户通常不是 1000（常见 1026 起），务必确认。
+
+启动后验证一下真的写进去了 —— 在页面上练几个词，然后：
 
 ```bash
-# 导出数据卷到 tar
-docker run --rm -v typewords_typewords-data:/data -v "$PWD":/backup \
-  alpine tar czf /backup/typewords-data.tar.gz -C /data .
+ls -l data/       # 应该能看到上面那几个文件
 ```
 
-也可以直接用页面「设置 → 导出数据」下载 zip（含自定义文章的 mp3，数据卷里没有音频）。
+如果是空的，看 `docker compose logs` 里有没有 `EACCES` / `permission denied`。
+
+### 备份
+
+直接复制目录即可：
+
+```bash
+cp -r data data-backup-$(date +%F)
+# 或打包
+tar czf typewords-data-$(date +%F).tar.gz data/
+```
+
+也可以用页面「设置 → 导出数据」下载 zip（含自定义文章的 mp3，`data/` 里没有音频）。
+
+### 换个位置存
+
+不想放在项目目录下（比如想放到 NAS 的存储卷上），改 `.env` 里的 `DATA_DIR`：
+
+```bash
+DATA_DIR=/volume1/docker/typewords-data
+```
+
+相对路径以 compose 文件所在目录为基准，绝对路径直接生效。
 
 ### 想同时用手机和电脑？
 
@@ -67,8 +111,7 @@ docker compose --profile static up -d --build typewords-static
 ```bash
 docker compose logs -f            # 看日志
 docker compose up -d --build      # 拉了新代码后重新构建
-docker compose down               # 停止并删除容器（数据卷保留）
-docker compose down -v            # 连数据卷一起删除（会丢数据！）
+docker compose down               # 停止并删除容器（./data 保留）
 docker compose ps                 # 看状态和健康检查
 ```
 
@@ -80,8 +123,10 @@ docker compose ps                 # 看状态和健康检查
   SSR 模式下可用 `NUXT_PUBLIC_ORIGIN` 在运行时覆盖，改完重启即可，不必重新构建。
 - `NUXT_APP_BASE_URL` 只在部署到子路径时需要（如 `/typewords/`）。
   存储接口用 `withAppBaseURL()` 拼地址，子路径下会自动变成 `/typewords/api/storage/:key`。
-- `STORAGE_PATH` 是服务器数据目录，默认 `/app/localdata`，
-  改了要同步改 compose 里的卷挂载点。
+- `DATA_DIR` 是宿主机上的数据目录，默认 `./data`。
+- `PUID` / `PGID` 是容器内的运行身份，必须能写入 `DATA_DIR`（见上文「目录权限」）。
+- `STORAGE_PATH` 是**容器内**的数据目录，默认 `/app/localdata`，
+  一般不用改；真要改就得同步改 compose 里的挂载点右侧。
 - **不要设置 `HOST`**。`nuxt.config.ts` 用它作为 `public.host` 的默认值，
   而 nitro 在运行时用同名变量决定监听地址 —— 在 SSR 容器里设置会导致启动失败。
 
