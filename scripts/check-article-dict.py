@@ -39,6 +39,7 @@ LATEX_LEFTOVER_RE = re.compile(r'\$|\\[a-zA-Z]+|\\[{}]|[_^]\{|\\\\')
 def check(path):
     d = json.load(open(path))
     problems = []
+    blank_cn = 0
 
     for a in d:
         title = a['title'][:38]
@@ -72,11 +73,15 @@ def check(path):
             if len(cn_lines) != len(sec):
                 problems.append(f'{title} 第{i + 1}段行数不符：'
                                 f'原文 {len(sec)} 句 vs 译文 {len(cn_lines)} 行')
+            # 翻译失败的句子留空行占位（下标不会错，页面上那句没有中文）。
+            # 不算缺陷 —— 结构是对的，页面里点「翻译」能补上 —— 但要报数量。
+            blank_cn += sum(1 for l in cn_lines if not l.strip())
 
     n_sent = sum(len(s) for a in d for s in frontend_sections(a['text']))
     n_cn = sum(1 for a in d if a.get('textTranslate'))
     tag = 'FAIL' if problems else ' ok '
-    print(f'[{tag}] {path}：{len(d)} 篇 / {n_sent} 句 / {n_cn} 篇有译文')
+    extra = f'（其中 {blank_cn} 句译文空缺）' if blank_cn else ''
+    print(f'[{tag}] {path}：{len(d)} 篇 / {n_sent} 句 / {n_cn} 篇有译文{extra}')
     for p in problems[:15]:
         print('        ', p)
     if len(problems) > 15:
