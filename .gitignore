@@ -46,3 +46,11 @@ localdata
 public/vscode
 apps/TypeWordsMiniApp
 *.tsbuildinfo
+
+# 自建词库相关（scripts/build-word-dict.py、make-article-dict.py）
+# 注意 gitignore 不支持行尾注释，注释必须单独一行
+scripts/__pycache__/
+# ECDICT csv 66MB，build-word-dict.py 的释义来源
+build-cache/
+# macOS 打包 tar 时留下的 AppleDouble 文件
+._*
