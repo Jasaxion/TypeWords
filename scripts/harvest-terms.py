@@ -243,6 +243,14 @@ def fold_plurals(ranked):
     training、learning、embedding、signaling、sequencing 都必须留着，
     折掉就把领域核心词删了。实测那一类有 35+30+25 个，全是该留的。
 
+    **也别想用 ECDICT 的 `exchange` 列（`0:` 段）来做词形归并**，实测过，不行：
+        embedding      0:embed        <- 正是不该折的那类
+        signaling      0:signale      <- 这个"词根"根本不存在
+        significantly  (空)
+        training       0:training     <- 指向自己
+    只有最后那种反过来有用：`0:` 指向自身说明词典也把它当独立词条，可以当
+    「别折」的白名单；`0:` 的值本身不能当「该折成什么」的答案。
+
     ss/us/is 结尾不当复数处理（loss、focus、analysis）。
     """
     rank = {w: i for i, (w, *_) in enumerate(ranked)}
