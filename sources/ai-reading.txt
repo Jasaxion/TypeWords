@@ -1,0 +1,13 @@
+https://lilianweng.github.io/posts/2026-07-04-harness/
+https://lilianweng.github.io/posts/2026-06-24-scaling-laws/
+https://lilianweng.github.io/posts/2025-05-01-thinking/
+https://lilianweng.github.io/posts/2024-11-28-reward-hacking/
+https://lilianweng.github.io/posts/2024-07-07-hallucination/
+https://lilianweng.github.io/posts/2024-04-12-diffusion-video/
+https://lilianweng.github.io/posts/2024-02-05-human-data-quality/
+https://lilianweng.github.io/posts/2023-10-25-adv-attack-llm/
+https://thegradient.pub/virtue-ethics-ai-alignment/
+https://thegradient.pub/agi-is-not-multimodal/
+https://thegradient.pub/shape-symmetry-structure/
+https://thegradient.pub/dialog/
+https://thegradient.pub/we-need-positive-visions-for-ai-grounded-in-wellbeing/
