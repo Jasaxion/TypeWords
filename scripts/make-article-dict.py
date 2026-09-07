@@ -182,6 +182,48 @@ REFERENCE_RE = re.compile(
     re.I)
 
 
+# PDF 首页/页眉页脚的元信息。论文 PDF 抽出来的头几段是
+#   arXiv:1706.03762v7 [cs.CL] 2 Aug 2023
+#   Ashish Vaswani∗ Google Brain avaswani@google.com
+# 邮箱和 arXiv 编号里的 `.` 还会把断句切成 'com noam@google.' 这种碎片。
+# 只认邮箱和 arXiv 号这两个明确标记，不去猜作者名 —— 正文里的人名不该被牵连。
+#
+# `<EOS>`、`<pad>` 这类特殊 token 来自注意力可视化图。图里的词有时是
+# 打散交错的（'process <EOS> have making <pad> <pad> governments voting'），
+# 连续重复判不出来，但这几个 token 正常英文里不会出现，可以直接认。
+# 故意不收 `<s>` / `</s>`：NLP 论文正文里会正常讨论 "a <s> token marks the
+# start of a sequence"，那是好句子，不该连坐。
+PDF_META_RE = re.compile(r'\b[\w.+-]+@[\w-]+\.[\w.]+|arxiv:\d{4}\.\d{4,}'
+                         r'|<(eos|bos|pad|unk|mask)>', re.I)
+
+
+def is_token_spam(s):
+    """
+    重复词刷屏。PDF 里的注意力可视化图、对齐矩阵会被抽成
+        we we we we are are are are missing missing missing missing
+        <EOS> <EOS> <EOS> <pad> <pad> <pad> at layer 5 of 6
+    语法上不成句，打起来也纯属折磨手指。
+
+    判据是**连续**重复，不是词频。一开始我按「最高频词占比 > 0.3」判，
+    结果 TED 里 15 句好句子被误删 —— 排比和强调恰恰是口语的特征：
+
+        "I'm not thin enough, rich enough, beautiful enough, smart enough."
+        "I worked and worked, and I got lucky, and worked, and got lucky."
+
+    这些词频很高但不连着出现，而可视化图里同一个 token 一定是挨着刷的。
+    连续 3 次以上同词，正常英文写不出来（"very very good" 到 2 次为止）。
+    """
+    w = s.split()
+    if len(w) < 6:
+        return False
+    run = 1
+    for a, b in zip(w, w[1:]):
+        run = run + 1 if a == b else 1
+        if run >= 3:
+            return True
+    return False
+
+
 def drop_boilerplate(paras):
     """
     去掉模板残留和参考文献段落。
@@ -194,6 +236,8 @@ def drop_boilerplate(paras):
     for p in paras:
         s = p.strip()
         if BOILERPLATE_RE.match(s) or REFERENCE_RE.search(s):
+            continue
+        if PDF_META_RE.search(s) or is_token_spam(s):
             continue
         out.append(p)
     return out
@@ -787,7 +831,7 @@ def gather_sources(args):
         except Exception as e:  # noqa: BLE001 —— 单个演讲失败不该毁掉整批
             print(f'  失败，跳过：{e}', file=sys.stderr)
             continue
-        docs.append({'title': title, 'paragraphs': paras})
+        docs.append({'title': title, 'paragraphs': drop_boilerplate(paras)})
         print(f'  + {title[:50]}（{len(paras)} 段）')
         time.sleep(0.5)
 
@@ -806,7 +850,8 @@ def gather_sources(args):
                 print('  取不到文字（可能是扫描版，需要 OCR），跳过', file=sys.stderr)
                 continue
             name = os.path.splitext(os.path.basename(src))[0]
-            docs.append({'title': name, 'paragraphs': body.split('\n\n')})
+            docs.append({'title': name,
+                         'paragraphs': drop_boilerplate(body.split('\n\n'))})
         finally:
             if cleanup and os.path.exists(cleanup):
                 os.remove(cleanup)
@@ -839,6 +884,8 @@ def gather_sources(args):
                 continue
             docs.append({
                 'title': it.get('title', ''),
+                # 不过 drop_boilerplate：JSON 是自己准备的材料，
+                # 想留什么是自己的事，脚本不该偷偷删段落
                 'paragraphs': [p for p in re.split(r'\n\s*\n', body) if p.strip()],
                 # JSON 里自带译文就直接用，不再机器翻译
                 'titleTranslate': it.get('titleTranslate', ''),
@@ -857,6 +904,7 @@ def gather_sources(args):
             body = '\n'.join(lines[1:]).strip() or content
             docs.append({
                 'title': title,
+                # 同 --json，自备的 txt 不过滤
                 'paragraphs': [p for p in re.split(r'\n\s*\n', body) if p.strip()],
             })
             print(f'  + {title[:50]}')
