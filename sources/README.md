@@ -39,3 +39,19 @@ python3 $S --name "生命科学科普" --en-name life-science-read --category �
 清单里的 `length` 一律由 `scripts/deploy-article-dicts.py` 从生成的 json 现读。
 建完先跑 `python3 scripts/check-article-dict.py /tmp/twout/en/article/*.json`，
 非 0 就别传。
+
+## 单词词表
+
+`wordlists/` 不在这个仓库里 —— 词表和 ECDICT 都只在 NAS 上
+（`/path/to/TypeWords/wordlists/`），因为本机的 `dicts/` 是空的，
+建词库需要那 244 个官方词库当数据源。重建：
+
+```bash
+ssh -p 40022 root@192.168.1.10 'cd /path/to/TypeWords && \
+  python3 scripts/build-word-dict.py --words wordlists/ai-ml.txt \
+    --name "AI 与机器学习" --en-name ai-ml --category 专业领域 --tags 人工智能 \
+    --ecdict ../build-cache/ecdict.csv'
+```
+
+`--ecdict` 必须显式给：ECDICT 在**仓库的上一级**，不是脚本默认的 `<repo>/build-cache/`。
+建完 `chown 1000:1001` + `chmod go+r`，否则容器读不到。
