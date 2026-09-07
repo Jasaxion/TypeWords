@@ -55,3 +55,16 @@ ssh -p 40022 root@192.168.1.10 'cd /path/to/TypeWords && \
 
 `--ecdict` 必须显式给：ECDICT 在**仓库的上一级**，不是脚本默认的 `<repo>/build-cache/`。
 建完 `chown 1000:1001` + `chmod go+r`，否则容器读不到。
+
+## 改了过滤规则怎么办
+
+别重新翻译（半小时以上、限流、不能并发）。只影响段落取舍的规则改动
+（`BOILERPLATE_RE` / `REFERENCE_RE` / `is_token_spam` / `fix_c1`）用：
+
+```bash
+python3 scripts/restrip-article-dict.py /tmp/twout/en/article/*.json
+python3 scripts/check-article-dict.py   /tmp/twout/en/article/*.json
+```
+
+它从 `text` 和 `textTranslate` 删掉**同一批下标**。影响切句的改动
+（`split_sentences`、`--max-sentence-chars`）它做不到，得按上面的命令重建。
