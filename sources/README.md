@@ -59,7 +59,8 @@ ssh -p 40022 root@192.168.1.10 'cd /path/to/TypeWords && \
 ## 改了过滤规则怎么办
 
 别重新翻译（半小时以上、限流、不能并发）。只影响段落取舍的规则改动
-（`BOILERPLATE_RE` / `REFERENCE_RE` / `is_token_spam` / `is_citation_block` / `fix_c1`）用：
+（`BOILERPLATE_RE` / `REFERENCE_RE` / `is_token_spam` / `is_citation_block` /
+`AUDIENCE_CUE` / `fix_c1`）用：
 
 ```bash
 python3 scripts/restrip-article-dict.py /tmp/twout/en/article/*.json
