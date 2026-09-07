@@ -218,6 +218,69 @@ PDF_META_RE = re.compile(r'\b[\w.+-]+@[\w-]+\.[\w.]+|arxiv:\d{4}\.\d{4,}'
                          r'|<(eos|bos|pad|unk|mask)>', re.I)
 
 
+# TED 文稿里的现场提示：`(Laughter)`、`(Applause)`、`(Music)`。
+# 它们不是讲者说的话，是转写员标的现场反应，打出来没意义。
+#
+# 为什么必须在 ted_transcript 里删、不能交给 drop_boilerplate：实测 2586 句里
+# 24 句含提示，其中**只有 2 句是整行只有提示**，另外 22 句和正文黏在一起
+# （`(Laughter) I see you.`、`...you know — (Laughter) — an awkward interaction`）。
+# 按段落取舍的过滤器要么放过它们、要么连正文一起删掉，只有在文本层剪掉才对。
+#
+# 只列**已知的**提示词，不写成 `^\([A-Z]\w+\)`：讲者说的话里也有整句括号
+# （实测有 `(Higher pitch) Where did you leave...` 这种模仿语气的，属于正文；
+# 也有正常的插入语括号）。宁可漏掉冷门提示词，不要吃掉正文。
+AUDIENCE_CUE = re.compile(
+    r'\(\s*(?:laughter|applause|cheers?|cheering|laughs?|laughing|sighs?|'
+    r'music|singing|video|audio|recording|beatboxing|silence|pause|'
+    r'clapping|booing|whistling|gasps?)\s*\)', re.I)
+
+# 译文侧的同一批提示。**只有 restrip-article-dict.py 用它** —— 建库时是先删
+# 提示再翻译，译文里根本不会出现。但已经建好的库译文里有 `（笑声）`，要跟
+# 英文侧删同一处，否则一边有一边没有。规则放这里而不是放 restrip 里，
+# 是为了让两份规则不会走偏（restrip 直接 import 本文件）。
+AUDIENCE_CUE_ZH = re.compile(r'[（(]\s*(?:笑声|掌声|欢呼声?|鼓掌|音乐|歌声|'
+                             r'视频|录音|音频|叹气|沉默|停顿|嘘声|口哨声|'
+                             r'喘息声?|倒吸一口气)\s*[)）]')
+
+
+def strip_cue_line(en, zh):
+    """
+    从一对「英文行 / 译文行」里剪掉现场提示。返回 (en, zh)，整行只有提示时返回
+    (None, None)，调用方要把这一行从**两边**一起删掉。
+
+    为什么不能只删英文那一行：前端 genArticleSectionData 对原文的行做
+    filter(Boolean)、对译文按下标直取。英文删空了、译文还在，从这行往后
+    全部错位，而段数、篇数都看不出异常。
+
+    提示夹在句子中间时，两侧的破折号会剩下来 ——
+    `you know — (Laughter) — an awkward` 剪完是 `you know — — an awkward`，
+    译文那边更明显（`你知道————尴尬的互动`）。所以剪完还要合并破折号。
+
+    **这一步必须只在真的剪掉了提示时做**，否则会误伤本来就有双破折号的正文：
+    `A range of 10-20 percent — maybe more — was seen.` 里那两个破折号是
+    一对插入语标记，中间隔着字，不该动 —— 但译文 `——也许更多——` 里两个
+    中文破折号一旦被当成「连着的」就会被合掉。所以没匹配到提示就原样返回。
+
+    中英文破折号规则不一样：英文 `— —` 合成一个 `—`；中文的 `——` 本身就是
+    **一个**标点（占两个字符），所以要合成 `——` 而不是 `—`。
+    """
+    if not AUDIENCE_CUE.search(en):
+        return en, zh
+    e = AUDIENCE_CUE.sub(' ', en)
+    e = re.sub(r'([—–-])\s*\1', r'\1', e)          # `— —` -> `—`
+    e = re.sub(r'\s{2,}', ' ', e).strip()
+    # 提示在句首时后面常跟着破折号/逗号
+    e = re.sub(r'^[\s—–\-,;:]+', '', e)
+    if not re.search(r'[A-Za-z]{2,}', e):      # 剪完没词了 = 整行都是提示
+        return None, None
+    z = AUDIENCE_CUE_ZH.sub('', zh)
+    z = re.sub(r'—{3,}', '——', z)                  # `————` -> `——`（中文破折号是双字符）
+    z = re.sub(r'\s{2,}', ' ', z).strip()
+    z = re.sub(r'^[\s—–\-,;:，；：]+', '', z)
+    # 译文空了不能留 ''，前端会当成"没有译文"；给一个空格占位
+    return e, z or ' '
+
+
 def is_token_spam(s):
     """
     重复词刷屏。PDF 里的注意力可视化图、对齐矩阵会被抽成
@@ -373,7 +436,10 @@ def ted_transcript(url):
     for p in paras_raw:
         # cue 内部也有换行（字幕按两行显示切的），一起压平
         joined = ' '.join((c.get('text') or '') for c in p.get('cues') or [])
+        joined = AUDIENCE_CUE.sub(' ', joined)
         joined = re.sub(r'\s+', ' ', joined).strip()
+        # 去掉提示后可能开头就剩标点（'— an awkward interaction' 那种）
+        joined = re.sub(r'^[\s—–\-,;:]+', '', joined)
         if len(joined) >= 40:
             paras.append(joined)
 

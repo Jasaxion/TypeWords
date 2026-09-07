@@ -44,7 +44,7 @@ def restrip(path, m):
     with open(path, encoding='utf-8') as f:
         data = json.load(f)
 
-    total = dropped = 0
+    total = dropped = cues = 0
     for a in data:
         ts = m.fix_c1(a.get('text') or '').split('\n\n')
         tt = m.fix_c1(a.get('textTranslate') or '').split('\n\n')
@@ -59,18 +59,41 @@ def restrip(path, m):
                 and not m.is_token_spam(p)
                 and not m.is_citation_block(p)]
         dropped += len(ts) - len(keep)
-        a['text'] = '\n\n'.join(ts[i] for i in keep)
-        a['textTranslate'] = '\n\n'.join(tt[i] for i in keep)
+        ts, tt = [ts[i] for i in keep], [tt[i] for i in keep]
+
+        # 行级：TED 的现场提示。段落级过滤器碰不到它们 —— 实测 22/24 处是和正文
+        # 黏在一起的，整段删掉就把正文一起删了。
+        for pi, (pe, pz) in enumerate(zip(ts, tt)):
+            le, lz = pe.split('\n'), pz.split('\n')
+            if len(le) != len(lz):
+                # 段内行数不等：这一段的译文本来就对不上，别再动它
+                continue
+            if not any(m.AUDIENCE_CUE.search(x) for x in le):
+                continue
+            oe, oz = [], []
+            for e, z in zip(le, lz):
+                e2, z2 = m.strip_cue_line(e, z)
+                if e2 is None:              # 整行都是提示，两边一起删
+                    cues += 1
+                    continue
+                oe.append(e2)
+                oz.append(z2)
+            if oe:                          # 整段都是提示的话保持原样，交给人看
+                ts[pi], tt[pi] = '\n'.join(oe), '\n'.join(oz)
+
+        a['text'] = '\n\n'.join(ts)
+        a['textTranslate'] = '\n\n'.join(tt)
 
     name = os.path.basename(path)
-    if not dropped:
+    if not dropped and not cues:
         print(f'{name}: {total} 段，没有要删的')
         return 0
 
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False)
-    print(f'{name}: {total} 段 -> 删掉 {dropped} 段')
-    return dropped
+    note = f'，另剪掉 {cues} 行纯现场提示' if cues else ''
+    print(f'{name}: {total} 段 -> 删掉 {dropped} 段{note}')
+    return dropped + cues
 
 
 def main():
