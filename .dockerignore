@@ -2,7 +2,10 @@ node_modules
 .nuxt
 .output
 dist
-.git
+# 本地开发时的服务器数据目录，不要打进镜像（生产用数据卷）
+localdata
+# 注意：这里故意不忽略 .git —— nuxt.config.ts 读取当前 commit 作为站点版本号，
+# 版本变化时应用会自动为本地数据创建快照备份。
 .github
 .vscode
 .husky

@@ -161,6 +161,15 @@ export default defineNuxtConfig({
     port: 5567,
   },
   nitro: {
+    // 自部署（SSR）时的本地数据存储：数据落在部署机器的磁盘上，
+    // 浏览器缓存被清空后可从这里恢复。Docker 中把 STORAGE_PATH
+    // 指向挂载的数据卷即可持久化。
+    storage: {
+      localdata: {
+        driver: 'fs',
+        base: process.env.STORAGE_PATH || './localdata',
+      },
+    },
     prerender: {
       ignore: appBaseURL === '/' ? [] : [withBaseURL('/manifest.json', appBaseURL)],
     },

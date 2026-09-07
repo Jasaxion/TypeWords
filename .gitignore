@@ -30,6 +30,8 @@ report.html
 .nuxt
 .nitro
 .cache
+# 自部署时服务器端本地数据（nitro fs storage）
+localdata
 # Misc
 .fleet
 

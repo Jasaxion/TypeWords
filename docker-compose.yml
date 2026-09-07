@@ -1,0 +1,72 @@
+# TypeWords —— NAS / 自建服务器部署
+#
+# 快速开始：
+#   cp docker/env.example .env      # 按需修改站点地址、端口
+#   docker compose up -d --build    # 构建并启动（端口 3000）
+#
+# 常用命令：
+#   docker compose logs -f          # 看日志
+#   docker compose up -d --build    # 更新代码后重新构建
+#   docker compose down             # 停止并移除容器（数据卷保留）
+#
+# 数据存放：默认 SSR 模式，数据写在 typewords-data 数据卷里
+# （容器内 /app/localdata）。清浏览器缓存、换浏览器、换设备都能恢复。
+# 备份就是备份这个卷，或直接用页面「设置 → 导出」下载 zip。
+
+name: typewords
+
+services:
+  # ------------------------------------------------------------------------ #
+  # SSR（默认）：数据持久化到服务器磁盘
+  # ------------------------------------------------------------------------ #
+  typewords:
+    build:
+      context: .
+      target: ssr
+      args:
+        # 站点对外地址，用于生成 canonical / og:url 等绝对链接
+        ORIGIN: ${ORIGIN:-http://localhost:3000}
+        # 部署在子路径时填写，例如 /typewords/ ；根路径保持 /
+        NUXT_APP_BASE_URL: ${NUXT_APP_BASE_URL:-/}
+        API_BASE: ${API_BASE:-http://localhost/}
+        VITE_PASSWORD_RSA_PUBLIC_KEY: ${VITE_PASSWORD_RSA_PUBLIC_KEY:-}
+        # 构建阶段 Node 堆上限（MB）。NAS 内存小可以调低，但过低会 OOM。
+        NODE_MAX_OLD_SPACE: ${NODE_MAX_OLD_SPACE:-4096}
+    image: typewords:ssr
+    container_name: typewords
+    restart: unless-stopped
+    environment:
+      # SSR 下 runtimeConfig 可在运行时覆盖，改这里重启即可，无需重新构建
+      NUXT_PUBLIC_ORIGIN: ${ORIGIN:-http://localhost:3000}
+      # 数据目录，与下面的卷挂载点保持一致
+      STORAGE_PATH: /app/localdata
+      # 切勿设置 HOST：nitro 会把它当作监听地址，容器内会启动失败
+      PORT: "3000"
+    volumes:
+      - typewords-data:/app/localdata
+    ports:
+      - "${TYPEWORDS_PORT:-3000}:3000"
+
+  # ------------------------------------------------------------------------ #
+  # 静态（可选）：镜像最小，但没有服务端，数据只存在浏览器里，清缓存即丢失。
+  #   docker compose --profile static up -d --build typewords-static
+  # ------------------------------------------------------------------------ #
+  typewords-static:
+    profiles: ["static"]
+    build:
+      context: .
+      target: static
+      args:
+        ORIGIN: ${ORIGIN:-http://localhost:8080}
+        NUXT_APP_BASE_URL: ${NUXT_APP_BASE_URL:-/}
+        API_BASE: ${API_BASE:-http://localhost/}
+        VITE_PASSWORD_RSA_PUBLIC_KEY: ${VITE_PASSWORD_RSA_PUBLIC_KEY:-}
+        NODE_MAX_OLD_SPACE: ${NODE_MAX_OLD_SPACE:-4096}
+    image: typewords:static
+    container_name: typewords-static
+    restart: unless-stopped
+    ports:
+      - "${TYPEWORDS_STATIC_PORT:-8080}:80"
+
+volumes:
+  typewords-data:

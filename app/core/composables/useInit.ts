@@ -57,6 +57,9 @@ export function useInit() {
 
     await ensureHashGuardBeforeInit()
     // await userStore.init()
+    // 自部署（SSR）时先从服务器磁盘恢复：必须在 store.init() 之前，
+    // 因为 store 是从 IndexedDB 读的，恢复要先把 IndexedDB 写好。
+    await dataSync.hydrateFromServerStorage()
     let dictData = await store.init()
     let settingData = await settingStore.init()
     if (dictData && settingData) {

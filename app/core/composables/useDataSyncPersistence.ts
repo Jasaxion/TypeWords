@@ -31,6 +31,7 @@ import { type BaseState, getDefaultBaseState, getDefaultSettingState, useBaseSto
 import type { BackupData, SaveData, Snapshot } from '../types/types.ts'
 import { SyncDataType, CompareResult, DictType } from '../types/enum'
 import { Supabase } from '../utils/supabase'
+import { ServerStorage } from '../utils/server-storage'
 import { del, get, set } from 'idb-keyval'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { Toast } from '@/base'
@@ -108,20 +109,83 @@ async function persistLocalState(type: SyncDataType, val: unknown, updated_at?: 
   // console.log('persistLocalState',type,updated_at)
   if (type === SyncDataType.practice_word) {
     await setPracticeWordCacheLocal(val as PracticeWordCacheStored, updated_at)
-    return
-  }
-  if (type === SyncDataType.practice_article) {
+  } else if (type === SyncDataType.practice_article) {
     await setPracticeArticleCacheLocal(val as PracticeArticleCache, updated_at)
-    return
+  } else {
+    await set(
+      getPersistKey(type),
+      JSON.stringify({
+        val,
+        version: getDataVersion(type),
+        updated_at,
+      })
+    )
   }
-  await set(
-    getPersistKey(type),
-    JSON.stringify({
-      val,
-      version: getDataVersion(type),
-      updated_at,
+
+  // 自部署（SSR）时同步写一份到服务器磁盘，浏览器缓存被清也能恢复。
+  // 静态部署下 ServerStorage 探测不到接口，这里直接跳过。
+  await ServerStorage.setItem(type, { val, version: getDataVersion(type), updated_at })
+}
+
+/**
+ * 与服务器文件存储做一次双向对账。
+ *
+ * - 服务器较新（含「本地被清空」）→ 拉回本地
+ * - 本地较新（含「服务器还没有」）→ 推到服务器
+ *
+ * 推送时直接搬运本地已存的原始 payload，不经过 store —— 因为对账发生在
+ * store.init() 之前，此时 store 还是默认值，用它会把空数据推上去。
+ */
+async function reconcileWithServerStorage(
+  type: SyncDataType,
+  store: ReturnType<typeof useBaseStore>,
+  settingStore: ReturnType<typeof useSettingStore>
+): Promise<boolean> {
+  const serverMeta = await ServerStorage.getMeta(type)
+  // getLocalPersistMeta 返回的是完整 payload（含 val），这里也当数据源用
+  const localPayload = (await getLocalPersistMeta(type)) as
+    | (LocalPersistMeta & { val?: unknown })
+    | null
+  const currentVersion = getDataVersion(type)
+
+  const pushLocal = async () => {
+    if (!localPayload || localPayload.val == null) return false
+    await ServerStorage.setItem(type, {
+      val: localPayload.val,
+      version: localPayload.version ?? currentVersion,
+      updated_at: localPayload.updated_at,
     })
+    return false
+  }
+
+  // 服务器上没有这类数据 → 用本地补齐
+  if (!serverMeta || serverMeta.version == null) return pushLocal()
+
+  let serverIsNewer: boolean
+  if (!localPayload || localPayload.val == null) {
+    // 本地空、服务器有 —— 典型的「清了浏览器缓存 / 换了浏览器」
+    serverIsNewer = true
+  } else if (!localPayload.updated_at) {
+    serverIsNewer = false
+  } else {
+    serverIsNewer =
+      shouldFetchRemote(localPayload.updated_at, serverMeta.updated_at, serverMeta.version, currentVersion) ===
+      CompareResult.RemoteNewer
+  }
+
+  if (!serverIsNewer) return pushLocal()
+
+  const payload = await ServerStorage.getItem(type)
+  if (!payload) return false
+
+  await applyRemoteDataByType(
+    type,
+    { type, data: payload.val, updated_at: payload.updated_at, data_version: payload.version },
+    store,
+    settingStore
   )
+  console.log('[server-storage] 已从服务器恢复', type)
+  return true
 }
 
 function applyDictData(store: ReturnType<typeof useBaseStore>, data: unknown) {
@@ -581,6 +645,25 @@ export function useDataSyncPersistence() {
     if (type === SyncDataType.setting) return settingStore.$state
   }
 
+  /**
+   * 启动时与服务器文件存储对账（仅自部署 SSR 有效）。
+   *
+   * 返回是否有任何一类数据是从服务器恢复的 —— 恢复过说明本地已被覆写。
+   */
+  async function hydrateFromServerStorage(): Promise<boolean> {
+    if (!(await ServerStorage.probe())) return false
+    let restored = false
+    for (const type of ALL_SYNC_TYPES) {
+      try {
+        const ok = await reconcileWithServerStorage(type, store, settingStore)
+        restored = restored || ok
+      } catch (e) {
+        console.warn('[server-storage] 对账失败', type, e)
+      }
+    }
+    return restored
+  }
+
   async function clear() {
     let d = getDefaultBaseState()
     d.load = true
@@ -610,6 +693,7 @@ export function useDataSyncPersistence() {
     getLocalCompactDataByType,
     syncData,
     getDictSyncBlockReason,
+    hydrateFromServerStorage,
     clear,
   }
 }
