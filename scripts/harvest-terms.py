@@ -56,10 +56,12 @@ motherfucker goddamn ass whore slut cunt
 
 # arXiv 摘要里混着 LaTeX 命令和平台词。这些不是英语单词，
 # 查词典也查不到，提前扔掉省得占词表名额。
+# https/http/www 是链接残片（ECDICT 居然收了 https，光靠「查不到就丢」拦不住）。
 LATEX_NOISE = set("""
 textbf textit emph mathbf mathcal texttt textsc mathrm underline
 href url cite ref eqref citep citet
 arxiv github huggingface openreview
+https http www doi html
 """.split())
 
 # 功能词。领域词频里这些永远排前面，但没有学习价值。
@@ -222,6 +224,38 @@ def count_terms(docs, skip, min_docs, min_len=4):
     return out
 
 
+def fold_plurals(ranked):
+    """
+    规则复数/三单和词根都上榜时，只留**词根**，把名额让给别的词。
+
+    起因：ai-ml 词表 700 个词里有 89 对这样的重复（models/model、tasks/task、
+    agents/agent），白占 13% 的名额；而且屈折形的释义明显更差 ——
+    ECDICT 里 models 是「模型( model的名词复数 ); 模特儿」，model 才是正经释义。
+
+    **一律留词根，不比词频。** 最早写的是「留排名高的那个」，被测试打回：
+      - improves / remains / seems 的 -s 是动词三单而不是复数，
+        词典里 improve 才有完整释义；
+      - process / processes 里复数词频更高，按词频会把 process 删掉，
+        留下一个「process的复数」当词条。
+    查词典、学构词都该以词根为准，词频高低不改变这一点。
+
+    **只折叠 -s，不动 -ing / -ed。** 后者在专业语料里是术语而不是屈折：
+    training、learning、embedding、signaling、sequencing 都必须留着，
+    折掉就把领域核心词删了。实测那一类有 35+30+25 个，全是该留的。
+
+    ss/us/is 结尾不当复数处理（loss、focus、analysis）。
+    """
+    rank = {w: i for i, (w, *_) in enumerate(ranked)}
+    drop = set()
+    for w in rank:
+        if w.endswith('s') and not w.endswith(('ss', 'us', 'is')):
+            base = w[:-2] if w.endswith('es') and w[:-2] in rank else w[:-1]
+            if base in rank and base != w:
+                drop.add(w)          # 永远丢屈折形，留词根
+    return [r for r in ranked if r[0] not in drop], len(drop)
+
+
+
 def main():
     ap = argparse.ArgumentParser(description='从真实语料统计高频词，生成词表')
     ap.add_argument('source', choices=['arxiv', 'pubmed', 'freq'])
@@ -234,6 +268,9 @@ def main():
     ap.add_argument('--min-docs', type=int, default=3,
                     help='至少出现在几篇文档里，滤掉一次性词')
     ap.add_argument('--min-len', type=int, default=4, help='最短词长')
+    ap.add_argument('--fold-plurals', action='store_true',
+                    help='规则复数和单数都上榜时只留词频高的那个，'
+                         '把名额让给别的词（实测 ai-ml 能腾出 89 个）')
     ap.add_argument('-o', '--output', required=True, help='输出词表路径')
     args = ap.parse_args()
 
@@ -261,6 +298,10 @@ def main():
                   and w not in CONTRACTION_STEMS and w not in PROFANITY
                   and w not in LATEX_NOISE]
         print(f'\n{len(ranked)} 个候选词')
+
+    if args.fold_plurals:
+        ranked, n = fold_plurals(ranked)
+        print(f'折叠规则复数 {n} 个（名额让给后面的词），剩 {len(ranked)} 个候选')
 
     picked = ranked[:args.top]
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or '.', exist_ok=True)
