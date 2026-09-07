@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""
+用当前的过滤规则重新清理**已建好**的文章词库，不重新翻译。
+
+为什么需要它：翻译走 Google 免费接口，一个库要跑半小时以上，而且按 IP 限流、
+不能并发。所以每次改了过滤规则（BOILERPLATE_RE / is_token_spam / fix_c1）
+都重跑一遍抓取+翻译，代价太大。这个脚本只删段落，译文原样保留。
+
+**两边必须删同一批下标。** 段落是「英文段 + 译文段」按下标一一对应的
+（前端 genArticleSectionData 就是这么配对的），只删英文那边会让后面每一段的
+译文都错位 —— 而且段数还是相等的，check-article-dict.py 也看不出来。
+
+只能删段落，改不了段落划分：新规则如果是**切句**层面的（split_sentences、
+--max-sentence-chars），这里帮不上忙，得重新建库。
+
+用法：
+    python3 scripts/restrip-article-dict.py /tmp/twout/en/article/*.json
+    python3 scripts/check-article-dict.py  /tmp/twout/en/article/*.json   # 再查一遍
+"""
+
+import importlib.util
+import json
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_rules():
+    """
+    把 make-article-dict.py 当模块导入，复用它的过滤规则。
+
+    文件名带连字符，import 不了，只能走 spec_from_file_location。
+    这样规则只有一份，不会和主脚本走偏 —— 复制一份过来迟早对不上。
+    """
+    path = os.path.join(ROOT, 'scripts', 'make-article-dict.py')
+    spec = importlib.util.spec_from_file_location('mad', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def restrip(path, m):
+    with open(path, encoding='utf-8') as f:
+        data = json.load(f)
+
+    total = dropped = 0
+    for a in data:
+        ts = m.fix_c1(a.get('text') or '').split('\n\n')
+        tt = m.fix_c1(a.get('textTranslate') or '').split('\n\n')
+        if len(ts) != len(tt):
+            # 本来就错位的库不动 —— 删段只会把问题埋得更深
+            print(f'  跳过《{(a.get("title") or "")[:36]}》：段数本来就不等 '
+                  f'({len(ts)} vs {len(tt)})，先查原因', file=sys.stderr)
+            continue
+        total += len(ts)
+        keep = [i for i, p in enumerate(ts)
+                if not m.BOILERPLATE_RE.match(p) and not m.is_token_spam(p)]
+        dropped += len(ts) - len(keep)
+        a['text'] = '\n\n'.join(ts[i] for i in keep)
+        a['textTranslate'] = '\n\n'.join(tt[i] for i in keep)
+
+    name = os.path.basename(path)
+    if not dropped:
+        print(f'{name}: {total} 段，没有要删的')
+        return 0
+
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+    print(f'{name}: {total} 段 -> 删掉 {dropped} 段')
+    return dropped
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return 2
+    m = load_rules()
+    # 不要写 sum(restrip(p, m) for p in ...)：生成器里一个文件出错，
+    # 后面的就不处理了，看起来像「只有一个文件有内容」。全部跑完再汇总。
+    n = [restrip(p, m) for p in sys.argv[1:]]
+    print(f'共 {len(n)} 个文件，删掉 {sum(n)} 段。'
+          f'接着跑 check-article-dict.py 确认对齐没坏。')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
