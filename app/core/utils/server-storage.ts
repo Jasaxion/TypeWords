@@ -89,8 +89,12 @@ export async function getItem(type: SyncDataType): Promise<ServerStoragePayload 
     if (!res.ok) return null
     const body = await res.json()
     const raw = body?.data
-    if (!raw || typeof raw !== 'string') return null
-    return JSON.parse(raw) as ServerStoragePayload
+    if (raw == null) return null
+    // 写入时存的是 JSON 字符串，但 nitro 的 unstorage 读出来时会自动反序列化，
+    // 于是这里拿到的通常已经是对象。两种形态都要认，只当字符串处理会静默失效。
+    if (typeof raw === 'string') return JSON.parse(raw) as ServerStoragePayload
+    if (typeof raw === 'object') return raw as ServerStoragePayload
+    return null
   } catch (e) {
     console.warn('[server-storage] 读取失败', type, e)
     return null
