@@ -34,6 +34,8 @@ report.html
 # localdata 是本地 pnpm dev 的默认目录，data/ 是 docker compose 的挂载目录
 localdata
 /data/
+# 官方词典数据，约 430MB，用 scripts/fetch-dicts.py 下载，不进仓库
+/dicts/
 # Misc
 .fleet
 

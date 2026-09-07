@@ -47,6 +47,8 @@ services:
       NUXT_PUBLIC_ORIGIN: ${ORIGIN:-http://localhost:3000}
       # 数据目录，与下面的挂载点保持一致
       STORAGE_PATH: /app/localdata
+      # 外部词典目录，与下面的挂载点保持一致（见 scripts/fetch-dicts.py）
+      DICTS_PATH: /app/dicts
       # 切勿设置 HOST：nitro 会把它当作监听地址，容器内会启动失败
       PORT: "3000"
     volumes:
@@ -54,6 +56,10 @@ services:
       # 启动前务必先手动建好这个目录（mkdir -p data）：目录不存在时
       # Docker 会用 root 建出来，容器内非 root 用户将无法写入。
       - ${DATA_DIR:-./data}:/app/localdata
+      # 官方词典数据（约 430MB，不进 git 也不进镜像）。
+      # 用 scripts/fetch-dicts.py 下载到这里，只读挂载即可。
+      # 目录不存在或为空时自动回落到镜像内置的词典，不影响启动。
+      - ${DICTS_DIR:-./dicts}:/app/dicts:ro
     ports:
       - "${TYPEWORDS_PORT:-3000}:3000"
 
