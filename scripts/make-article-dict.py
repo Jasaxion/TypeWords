@@ -824,6 +824,14 @@ def build_text(paragraphs, max_sentence_chars=0, strip_math=False):
 
     text 用 '\\n' 连句子、'\\n\\n' 连段落，正好是前端期望的格式。
 
+    **进来的段落先把内部空白压成单个空格**。因为 text 是用 '\\n' 连接句子的，
+    句子内部只要还留着换行，前端 split('\\n') 就会把一句拆成两行 ——
+    句数凭空变多，译文和 lrcPosition 全部错位，而且页面不报错。
+    `strip_html`/`clean_pdf_text` 自己会压，但 `--json` / `--txt-dir` / `--txt`
+    这些"自备材料"的路径不会：硬换行的 txt（每行 80 字符那种）最典型，
+    实测一篇 10 句的文章会被前端读成 14 句。所以在这里统一兜住，
+    而不是指望每个抽取器都记得压。
+
     strip_math 会丢句子，所以**丢空了的段落必须整段跳过**，
     不能留下空 section —— 空段落会让 '\\n\\n' 连出连续分隔符，
     前端拆出空段，译文下标全错。
@@ -831,6 +839,10 @@ def build_text(paragraphs, max_sentence_chars=0, strip_math=False):
     sections = []
     dropped = 0
     for p in paragraphs:
+        # 换行、制表、连续空格一律压成单个空格（见上面的说明）
+        p = re.sub(r'\s+', ' ', p).strip()
+        if not p:
+            continue
         sents = split_sentences(p)
         if strip_math:
             kept = []

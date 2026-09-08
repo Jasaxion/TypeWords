@@ -109,9 +109,12 @@ def upload_audio(local_dir, en_name):
     """
     if not os.path.isdir(local_dir):
         sys.exit(f'音频目录不存在: {local_dir}')
-    files = sorted(f for f in os.listdir(local_dir) if f.endswith('.mp3'))
+    # 后缀跟着 server/routes/audio 的白名单走。默认编码是 opus(.ogg)，
+    # 只认 .mp3 的话换了编码就会报「里没有 mp3」——实际是有音频的。
+    exts = ('.ogg', '.mp3', '.m4a', '.wav')
+    files = sorted(f for f in os.listdir(local_dir) if f.endswith(exts))
     if not files:
-        sys.exit(f'{local_dir} 里没有 mp3')
+        sys.exit(f'{local_dir} 里没有音频（{"/".join(exts)}）')
     total = sum(os.path.getsize(os.path.join(local_dir, f)) for f in files)
     print(f'音频 {len(files)} 个文件 {total / 1024 / 1024:.0f} MB -> {en_name}/')
 

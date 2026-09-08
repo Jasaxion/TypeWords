@@ -5,8 +5,11 @@ description: Convert web pages, PDFs, RSS feeds, TED transcripts, JSON, or plain
 
 # 把任意文章导入 TypeWords
 
-TypeWords 官方只带新概念英语 1-4。想练别的内容，用 `scripts/make-article-dict.py`
-转换成词库格式。
+TypeWords 官方只带新概念英语 1-4。想练别的内容，有两个脚本：
+
+- `scripts/add-article.py` —— 往**已有**库里**追加一篇**，一条命令走完
+  抽正文 → 翻译 → 合成朗读 → 追加 → 自查。日常加文章用这个。
+- `scripts/make-article-dict.py` —— 建**新库**，一次转一批，会**覆盖**整个 json。
 
 这份文档记的**几乎全是实测踩出来的坑**，不是 API 说明 —— 脚本的参数看
 `--help` 就行，这里写的是「为什么必须这么做」。
@@ -21,19 +24,52 @@ text.split('\n\n')   ->  段落 section
 ```
 
 `textTranslate` 用同样规则拆，然后**按下标一一对应**：第 i 段第 j 句的译文 =
-`textTranslate` 第 i 段第 j 行。
+`textTranslate` 第 i 段第 j 行。`lrcPosition`（音频时间轴）也是同一套展平顺序。
 
 所以**译文的段数、每段行数必须和原文完全一致**。多一行少一行，后面全部错位，
-页面上表现为「译文跟原文对不上」。脚本里有 assert 保证这点，别绕过它。
+页面上**不报错**，只是「译文跟原文对不上」、「每句念的是别的句子」。
+脚本每篇都校验这一点，对不上就**丢弃该篇译文、保住原文**（不中断整批）。
+别绕过这个校验。
 
 由此推出两条容易忽略的要求：
 
 1. **段落内不能有 `\n`**。网页源码常有软换行（paulgraham.com 每 70 列硬折一次），
-   留在段落里会被前端当成句子分隔符，一句切成好几句。`strip_html` 用
-   `re.sub(r'\s+', ' ', p)` 把 `\n` 一起合并掉。
+   留在段落里会被前端当成句子分隔符，一句切成好几句。现在统一在 `build_text`
+   里用 `re.sub(r'\s+', ' ', p)` 压掉 —— 不能只指望 `strip_html`：`--json` /
+   `--txt` / `--txt-dir` 这些自备材料的路径不经过它，实测一篇 10 句的
+   硬换行 txt 会被前端读成 14 句。
 2. **不能有空段落**。`filter(Boolean)` 会丢掉空段，导致下标偏移。
 
-## 转换文章
+## 加一篇到已有库（日常用法）
+
+```bash
+export TW_TTS_KEY=sk-...          # 合成朗读用
+export TW_TTS_URL=https://<网关>/api/v1/services/aigc/multimodal-generation/generation
+export TW_LLM_URL=https://<网关>/compatible-mode/v1/chat/completions   # 翻译用
+
+python3 scripts/add-article.py --url https://example.com/post --into my-reading
+```
+
+来源和 `make-article-dict.py` 一样（`--url` / `--rss` / `--pdf` / `--ted` /
+`--json` / `--txt` / `--txt-dir`），默认音色 Chelsie、opus 编码、`qwen-plus` 翻译。
+`--dry-run` 先看规模（句数/时长/体积/耗时）不动手。
+
+**必须是追加，不能重建**：`lastLearnIndex` 是**位置下标**，`audioSrc` 也按数组
+下标命名（`/audio/<enName>/<i>.ogg`）。重建整库会重排顺序 —— 页面不报错，只是
+「接着学」指到别的文章、每篇念的是别人的音频。所以脚本只往末尾加，已有条目的
+下标一个都不动；音频也只给新加的几篇合成，上传是增量的。
+
+**改之前先把部署机上那份拉下来**。`--into` 读的是本地
+`dicts/en/article/<name>.json`，在旧副本上追加会把线上后来加的文章覆盖掉。
+脚本会打印当前篇数，但没法替你判断哪份新。
+
+追加**不用** `--rebuild`：清单里的 `length` 会过期，但前端在
+`normalizeStoredDict()`（`app/core/utils/index.ts`）里按 `articles.length`
+重算。只有新建库（`--create --name "..."`）才要加清单条目 + rebuild。
+
+同名文章会被跳过，所以同一条命令重跑不会加出重复文章。
+
+## 转换文章（建新库）
 
 ```bash
 S=scripts/make-article-dict.py
@@ -75,7 +111,21 @@ python3 $S --name "Paul Graham 文集" --en-name pg-essays \
 `--translate` 逐句发请求 + 0.4s 间隔，2000 句要十几分钟。**放后台跑**，
 别让工具调用超时。先用 `--dry-run` 看统计（几篇、几句、标题对不对）。
 
-## 翻译接口会限流，**绝对不要并发**
+## 翻译：LLM 走 add-article.py，免费接口会限流
+
+`add-article.py` 默认用网关上的 `qwen-plus` 逐行翻译，比免费接口通顺得多，
+也没有 IP 限流问题。守行数的办法（这是唯一要紧的事）：
+
+- 提示词要求逐行输出、每行带原编号；回来的行**按编号还原**而不是按顺序 ——
+  实测能容忍模型加个「以下是翻译：」、把 `1.` 写成 `1、`、甚至顺序打乱。
+- 编号对不上就**整批重试**（每批 40 行），重试还不行整批留空占位，绝不错位。
+- 最后再核一遍段数和每段行数，不符就丢译文保原文。
+
+实测 95 行跨 3 个批次零漂移、零空行，约 56 秒。占位必须用空格 `' '` 而不是
+空字符串 —— `'\n'.join(['', ''])` 是 `'\n\n'`，正好是段落分隔符，会在段落
+中间凭空多出一个段边界。
+
+### 免费接口（`make-article-dict.py --translate` / `--translate-free`）**绝对不要并发**
 
 免费接口按 IP 限流。同时跑两三个 `--translate` 一定触发 429，然后**连续几百句
 全失败**，产出一篇全空的译文却「看起来成功了」。一次只跑一个，多个词库串行。

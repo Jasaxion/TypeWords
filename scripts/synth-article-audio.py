@@ -179,6 +179,105 @@ def duration(path):
     return float(r.stdout.strip())
 
 
+def check_ffmpeg(codec_name):
+    """确认 ffmpeg 在、且带得动选的编码器。缺了就直接退出。"""
+    if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
+        sys.exit('需要 ffmpeg / ffprobe')
+    if codec_name == 'opus':
+        r = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'],
+                           capture_output=True, text=True)
+        if 'libopus' not in r.stdout:
+            sys.exit('ffmpeg 没带 libopus，装一个带 libopus 的（brew install ffmpeg）'
+                     '或者用 --codec mp3')
+
+
+def synth_missing(key, sentences, voice, cache_dir, jobs=2):
+    """
+    把还没缓存的句子合成进缓存目录，返回 [(句子, 错误)]。
+
+    按句缓存 + 先写 .part 再改名：中途断了重跑只补缺的，不会留下半个文件。
+    同一句在不同文章里重复出现时只合成一次（缓存 key 是内容哈希）。
+
+    add-article.py 也用这个函数，别把逻辑抄过去 —— 缓存路径的算法一旦
+    两边不一致，增量加文章时会把整库重新合成一遍。
+    """
+    os.makedirs(os.path.join(cache_dir, voice), exist_ok=True)
+    todo = {}
+    for s in sentences:
+        p = cache_path(cache_dir, voice, s)
+        if not os.path.exists(p) or os.path.getsize(p) == 0:
+            todo[p] = (s, p)
+    todo = list(todo.values())
+    print(f'\n需要合成 {len(todo)} 句，已缓存 {len(set(sentences)) - len(todo)} 句')
+
+    done, failed = [0], []
+
+    def work(item):
+        s, p = item
+        try:
+            data = synth(key, s, voice)
+            tmp = p + '.part'
+            with open(tmp, 'wb') as f:
+                f.write(data)
+            os.replace(tmp, p)   # 先写 .part 再改名，中断不留半个文件
+        except Exception as e:   # noqa: BLE001
+            failed.append((s[:60], str(e)))
+        done[0] += 1
+        if done[0] % 25 == 0 or done[0] == len(todo):
+            print(f'  [{done[0]}/{len(todo)}] 失败 {len(failed)}', flush=True)
+
+    if todo:
+        with ThreadPoolExecutor(jobs) as ex:
+            list(ex.map(work, todo))
+    return failed
+
+
+def build_audio(sents, out_file, cache_dir, voice, codec_name, bitrate, gap):
+    """
+    把一篇的句子拼成一个音频文件，返回 (lrcPosition, 累计时长)。
+
+    用 concat demuxer 而不是 filter：不重新编码 wav，快得多。
+    句间静音靠 apad 之类不好控，改成拼完后按各句真实时长算偏移，
+    静音用一个专门生成的 wav 插进去。
+
+    lrcPosition 按**缓存 wav** 的时长累加，不是去解析拼好的音频 ——
+    编码会有几毫秒的帧对齐误差，但累加误差在一篇里可以忽略，
+    而且前端播完就 pause，不影响。
+    """
+    codec = CODECS[codec_name]
+    parts = [cache_path(cache_dir, voice, s) for s in sents]
+
+    silence = os.path.join(cache_dir, f'_gap_{gap}_{SAMPLE_RATE}.wav')
+    if not os.path.exists(silence):
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
+                        f'anullsrc=r={SAMPLE_RATE}:cl=mono', '-t', str(gap),
+                        silence], check=True)
+
+    # 列表文件用 out_file 的路径去重命名：多个库/多篇并存时不会互相覆盖
+    listfile = os.path.join(
+        cache_dir, '_list_' + hashlib.sha256(
+            os.path.abspath(out_file).encode()).hexdigest()[:16] + '.txt')
+    with open(listfile, 'w') as f:
+        for i, p in enumerate(parts):
+            f.write(f"file '{p}'\n")
+            if i < len(parts) - 1:
+                f.write(f"file '{silence}'\n")
+
+    os.makedirs(os.path.dirname(out_file), exist_ok=True)
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'concat', '-safe', '0',
+                    '-i', listfile] + codec['args'] +
+                   ['-b:a', bitrate, '-ac', '1', '-ar', str(SAMPLE_RATE),
+                    out_file], check=True)
+    os.remove(listfile)
+
+    lrc, t = [], 0.0
+    for p in parts:
+        d = duration(p)
+        lrc.append([round(t, 2), round(t + d, 2)])
+        t += d + gap
+    return lrc, t - gap
+
+
 def main():
     ap = argparse.ArgumentParser(description='给文章词库合成朗读音频')
     ap.add_argument('--dict', required=True, help='文章词库 json（会被就地改写）')
@@ -206,15 +305,7 @@ def main():
     if args.bitrate is None:
         args.bitrate = CODECS[args.codec]['default_bitrate']
 
-    if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
-        sys.exit('需要 ffmpeg / ffprobe')
-
-    if args.codec == 'opus':
-        r = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'],
-                           capture_output=True, text=True)
-        if 'libopus' not in r.stdout:
-            sys.exit('ffmpeg 没带 libopus，装一个带 libopus 的（brew install ffmpeg）'
-                     '或者用 --codec mp3')
+    check_ffmpeg(args.codec)
 
     if args.list_voices:
         key = os.environ.get('TW_TTS_KEY')
@@ -260,37 +351,8 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     # ---- 1. 合成所有缺的句子（按句缓存，可续传）----
-    todo = []
-    for _, _, sents in plan:
-        for s in sents:
-            p = cache_path(args.cache, args.voice, s)
-            if not os.path.exists(p) or os.path.getsize(p) == 0:
-                todo.append((s, p))
-    # 同一句在不同文章里重复出现时只合成一次
-    todo = list({p: (s, p) for s, p in todo}.values())
-    print(f'\n需要合成 {len(todo)} 句，已缓存 {n_sent - len(todo)} 句')
-
-    done = [0]
-    failed = []
-
-    def work(item):
-        s, p = item
-        try:
-            data = synth(key, s, args.voice)
-            tmp = p + '.part'
-            with open(tmp, 'wb') as f:
-                f.write(data)
-            os.replace(tmp, p)   # 先写 .part 再改名，中断不留半个文件
-        except Exception as e:   # noqa: BLE001
-            failed.append((s[:60], str(e)))
-        done[0] += 1
-        if done[0] % 25 == 0 or done[0] == len(todo):
-            print(f'  [{done[0]}/{len(todo)}] 失败 {len(failed)}', flush=True)
-
-    if todo:
-        with ThreadPoolExecutor(args.jobs) as ex:
-            list(ex.map(work, todo))
-
+    failed = synth_missing(key, [s for _, _, sents in plan for s in sents],
+                           args.voice, args.cache, args.jobs)
     if failed:
         print(f'\n{len(failed)} 句合成失败，前几条：')
         for t, e in failed[:5]:
@@ -304,38 +366,8 @@ def main():
     codec = CODECS[args.codec]
     for idx, article, sents in plan:
         out_file = os.path.join(out_dir, f'{idx}.{codec["ext"]}')
-        parts = [cache_path(args.cache, args.voice, s) for s in sents]
-
-        # 用 concat demuxer 而不是 filter：不重新编码 wav，快得多。
-        # 句间静音靠 apad 之类不好控，改成拼完后按各句真实时长算偏移，
-        # 静音用一个专门生成的 wav 插进去。
-        silence = os.path.join(args.cache, f'_gap_{args.gap}_{SAMPLE_RATE}.wav')
-        if not os.path.exists(silence):
-            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
-                            f'anullsrc=r={SAMPLE_RATE}:cl=mono', '-t', str(args.gap),
-                            silence], check=True)
-
-        listfile = os.path.join(args.cache, f'_list_{en_name}_{idx}.txt')
-        with open(listfile, 'w') as f:
-            for i, p in enumerate(parts):
-                f.write(f"file '{p}'\n")
-                if i < len(parts) - 1:
-                    f.write(f"file '{silence}'\n")
-
-        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'concat', '-safe', '0',
-                        '-i', listfile] + codec['args'] +
-                       ['-b:a', args.bitrate, '-ac', '1', '-ar', str(SAMPLE_RATE),
-                        out_file], check=True)
-        os.remove(listfile)
-
-        # lrcPosition 按各句真实时长累加。注意用缓存 wav 的时长，
-        # 不是去解析拼好的音频 —— 编码会有几毫秒的帧对齐误差，
-        # 但累加误差在一篇里可以忽略，而且前端播完就 pause，不影响。
-        lrc, t = [], 0.0
-        for p in parts:
-            d = duration(p)
-            lrc.append([round(t, 2), round(t + d, 2)])
-            t += d + args.gap
+        lrc, expect = build_audio(sents, out_file, args.cache, args.voice,
+                                  args.codec, args.bitrate, args.gap)
 
         article['audioSrc'] = f'/audio/{en_name}/{idx}.{codec["ext"]}'
         article['lrcPosition'] = lrc
@@ -343,8 +375,7 @@ def main():
         total_bytes += size
         real = duration(out_file)
         # 拼出来的时长应该和累加的差不多，差太多说明有句子没拼进去
-        drift = abs(real - (t - args.gap))
-        flag = '  ⚠ 时长不符' if drift > 1.0 else ''
+        flag = '  ⚠ 时长不符' if abs(real - expect) > 1.0 else ''
         print(f'  [{idx}] {len(sents):4d} 句  {real / 60:5.1f} 分钟  '
               f'{size / 1024 / 1024:5.1f} MB  {article["title"][:34]}{flag}')
 
