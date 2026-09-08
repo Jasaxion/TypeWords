@@ -379,7 +379,13 @@ def main():
         print(f'  [{idx}] {len(sents):4d} 句  {real / 60:5.1f} 分钟  '
               f'{size / 1024 / 1024:5.1f} MB  {article["title"][:34]}{flag}')
 
-    json.dump(articles, open(args.dict, 'w'), ensure_ascii=False)
+    # 和音频同样的原子写法：先写 .part 再改名。合成了一小时才走到这一步，
+    # 直接 open('w') 如果中途被 kill 会把整个词库截成半个文件。
+    # add-article.py 的追加也是这个套路。
+    tmp = args.dict + '.part'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(articles, f, ensure_ascii=False)
+    os.replace(tmp, args.dict)
     print(f'\n已写回 {args.dict}（audioSrc + lrcPosition）')
     print(f'音频 {out_dir}，共 {total_bytes / 1024 / 1024:.0f} MB')
     print('\n接下来：')
