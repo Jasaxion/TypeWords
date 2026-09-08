@@ -15,11 +15,14 @@ speechSynthesis，就是那个机械嗓子。
 
 ## 产出
 
-每篇文章一个 MP3（整篇拼在一起，不是一句一个文件 —— 前端就是按
+每篇文章一个音频文件（整篇拼在一起，不是一句一个文件 —— 前端就是按
 `audioSrc` + `[start, end]` 的模式跳着播的），外加写回词库 json：
 
-    article['audioSrc']    = '/audio/<en_name>/<idx>.mp3'
+    article['audioSrc']    = '/audio/<en_name>/<idx>.ogg'
     article['lrcPosition'] = [[start, end], ...]   # 按句展平，秒
+
+默认 16kHz 单声道 opus @24k，约 124MB 存下 12 小时朗读。用 mp3 存同样音质
+要 250MB（实测见下面 CODECS 的注释）。
 
 lrcPosition 的顺序必须和前端切句的顺序**完全一致**：text 按 \\n\\n 分段、
 段内按 \\n 分句，展平后逐个对应（article.ts:genArticleSectionData）。
@@ -50,8 +53,12 @@ lrcPosition 的顺序必须和前端切句的顺序**完全一致**：text 按 \
 
 - **网关限流很紧。** 实测 4 路并发有一半直接 Throttling.RateQuota，2 路稳定。
   默认 --jobs 2，不要往上调。
-- **MP3 必须恒定码率（CBR）。** 前端跳句是 `audio.currentTime = start`，
-  VBR 的 MP3 按字节偏移估算时间会跳错位置。这里用 `-b:a` 而不是 `-q:a`。
+- **接口只认 sample_rate，不认 format。** 传 format/audio_format 都被忽略，
+  永远返回 WAV；sample_rate 是真生效的（16000/24000/48000 都试过）。
+  所以压缩只能在本地转，不能指望服务端直接给 opus。
+- **mp3 必须恒定码率（CBR）。** 前端跳句是 `audio.currentTime = start`，
+  VBR 的 MP3 按字节偏移估算时间会跳错位置。所以 mp3 用 `-b:a` 而不是 `-q:a`。
+  opus 不受这个限制（跳句靠容器里的粒度位置）。
 - **服务端必须支持 Range。** 见 server/routes/audio/[...path].get.ts。
 - 音频**不能放 public/sound/**：那是构建输入，进了镜像每次加文章都要重新构建。
 """
@@ -84,6 +91,32 @@ MODEL = os.environ.get('TW_TTS_MODEL', 'qwen3-tts-flash')
 # 换网关/换模型时先用 --list-voices 试一遍，不要假设这张表还对。
 VOICES = ['Cherry', 'Ethan', 'Serena', 'Chelsie', 'Dylan', 'Jada', 'Sunny']
 
+# 合成用的采样率。接口的 sample_rate 是**认**的（实测 16000/24000/48000 都生效，
+# 而 format/audio_format 全被忽略、永远返回 WAV）。16k 对朗读够用，
+# 比默认 24k 少 1/3 的下载量和缓存体积。
+SAMPLE_RATE = 16000
+
+# 编码方案。实测同一段 26 秒朗读、和源 wav 比梅尔谱距离（越小越接近源）：
+#   opus 24k  3.20   |  mp3 48k  3.20   ← 同等音质，opus 只要一半体积
+#   opus 16k  3.58   |  mp3 32k  7.15   ← 同等体积，opus 音质好得多
+#   opus 12k  3.86   |  mp3 24k 18.85   ← mp3 到这就崩了
+# mp3 在低码率崩掉是因为 LAME 会硬性低通（32k 时切在 ~11kHz），
+# opus 是为语音设计的，16k 单声道朗读几乎听不出损失。
+# 跳句精度也验过：opus 各码率 envelope 相关 0.987~0.999，和 mp3 一个水平，
+# 所以换 opus 不影响 audio.currentTime = start 的定位。
+# 兼容性：Chrome/Firefox/Edge 一直支持 ogg-opus；Safari 从 17.5 起支持
+# （macOS Sonoma / iOS 17.5+）。要照顾更老的 Safari 就用 --codec mp3。
+CODECS = {
+    # -vbr on 是 libopus 默认：opus 的跳句靠容器里的粒度位置，不靠码率恒定，
+    # 所以这里不像 mp3 那样必须 CBR。
+    'opus': {'ext': 'ogg', 'args': ['-c:a', 'libopus', '-application', 'voip'],
+             'default_bitrate': '24k'},
+    # mp3 必须 CBR（-b:a 不是 -q:a）：前端跳句是 audio.currentTime = start，
+    # VBR 的 mp3 按字节偏移估算时间会跳错位置。
+    'mp3': {'ext': 'mp3', 'args': ['-c:a', 'libmp3lame'],
+            'default_bitrate': '32k'},
+}
+
 
 def split_sentences(text):
     """
@@ -105,7 +138,8 @@ def synth(key, text, voice, timeout=90, retries=6):
     """合成一句，返回 wav 字节。限流就退避重试。"""
     payload = json.dumps({
         'model': MODEL,
-        'input': {'text': text, 'voice': voice, 'language_type': 'English'},
+        'input': {'text': text, 'voice': voice, 'language_type': 'English',
+                  'sample_rate': SAMPLE_RATE},
     }).encode()
     last = None
     for i in range(retries):
@@ -131,7 +165,11 @@ def synth(key, text, voice, timeout=90, retries=6):
 
 
 def cache_path(cache_dir, voice, text):
-    h = hashlib.sha256(f'{MODEL}\x00{voice}\x00{text}'.encode()).hexdigest()[:20]
+    # 采样率进哈希：改了 SAMPLE_RATE 之后旧缓存必须失效，
+    # 否则会把 24k 的旧 wav 和 16k 的新 wav 拼进同一个文件（ffmpeg 会重采样，
+    # 但静音段和 lrcPosition 的时长基准就乱了）。
+    h = hashlib.sha256(
+        f'{MODEL}\x00{voice}\x00{SAMPLE_RATE}\x00{text}'.encode()).hexdigest()[:20]
     return os.path.join(cache_dir, voice, f'{h}.wav')
 
 
@@ -152,8 +190,11 @@ def main():
                     help='音频输出目录，产出 <out>/<enName>/<idx>.mp3')
     ap.add_argument('--cache', default='/tmp/twaudio-cache',
                     help='按句缓存 wav，断点续传靠它')
-    ap.add_argument('--bitrate', default='32k',
-                    help='MP3 码率，默认 32k 单声道（人声朗读够用）。必须是 CBR')
+    ap.add_argument('--codec', default='opus', choices=sorted(CODECS),
+                    help='编码方案，默认 opus（同音质下体积约为 mp3 的一半）。'
+                         '要兼容 Safari 17.5 以下就用 mp3')
+    ap.add_argument('--bitrate', default=None,
+                    help='码率，默认按 codec 取（opus 24k / mp3 32k）')
     ap.add_argument('--gap', type=float, default=0.25,
                     help='句间静音秒数，默认 0.25。太小听着连成一片，太大拖沓')
     ap.add_argument('--jobs', type=int, default=2,
@@ -162,8 +203,18 @@ def main():
     ap.add_argument('--dry-run', action='store_true', help='只算规模，不请求')
     args = ap.parse_args()
 
+    if args.bitrate is None:
+        args.bitrate = CODECS[args.codec]['default_bitrate']
+
     if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
         sys.exit('需要 ffmpeg / ffprobe')
+
+    if args.codec == 'opus':
+        r = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'],
+                           capture_output=True, text=True)
+        if 'libopus' not in r.stdout:
+            sys.exit('ffmpeg 没带 libopus，装一个带 libopus 的（brew install ffmpeg）'
+                     '或者用 --codec mp3')
 
     if args.list_voices:
         key = os.environ.get('TW_TTS_KEY')
@@ -194,7 +245,8 @@ def main():
     # 15.1 字符/秒 是七个音色在真实句子上的实测均值
     est_audio = n_char / 15.1
     print(f'  预计音频 {est_audio / 60:.0f} 分钟，'
-          f'{est_audio * int(args.bitrate.rstrip("k")) * 1000 / 8 / 1024 / 1024:.0f} MB @{args.bitrate}')
+          f'{est_audio * int(args.bitrate.rstrip("k")) * 1000 / 8 / 1024 / 1024:.0f} MB '
+          f'@{args.codec} {args.bitrate}')
     print(f'  预计耗时 {n_sent * 1.7 / args.jobs / 60:.0f} 分钟（{args.jobs} 并发，单句实测 ~1.7s）')
     if args.dry_run:
         return 0
@@ -246,20 +298,21 @@ def main():
         print('直接重跑本脚本即可（已合成的会跳过）')
         return 1
 
-    # ---- 2. 每篇拼成一个 MP3，同时记下每句的 [start, end] ----
+    # ---- 2. 每篇拼成一个音频文件，同时记下每句的 [start, end] ----
     print('\n拼接音频 ...')
     total_bytes = 0
+    codec = CODECS[args.codec]
     for idx, article, sents in plan:
-        mp3 = os.path.join(out_dir, f'{idx}.mp3')
+        out_file = os.path.join(out_dir, f'{idx}.{codec["ext"]}')
         parts = [cache_path(args.cache, args.voice, s) for s in sents]
 
         # 用 concat demuxer 而不是 filter：不重新编码 wav，快得多。
         # 句间静音靠 apad 之类不好控，改成拼完后按各句真实时长算偏移，
         # 静音用一个专门生成的 wav 插进去。
-        silence = os.path.join(args.cache, f'_gap_{args.gap}.wav')
+        silence = os.path.join(args.cache, f'_gap_{args.gap}_{SAMPLE_RATE}.wav')
         if not os.path.exists(silence):
             subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
-                            f'anullsrc=r=24000:cl=mono', '-t', str(args.gap),
+                            f'anullsrc=r={SAMPLE_RATE}:cl=mono', '-t', str(args.gap),
                             silence], check=True)
 
         listfile = os.path.join(args.cache, f'_list_{en_name}_{idx}.txt')
@@ -270,13 +323,13 @@ def main():
                     f.write(f"file '{silence}'\n")
 
         subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'concat', '-safe', '0',
-                        '-i', listfile, '-c:a', 'libmp3lame',
-                        '-b:a', args.bitrate, '-ac', '1', '-ar', '24000',
-                        mp3], check=True)
+                        '-i', listfile] + codec['args'] +
+                       ['-b:a', args.bitrate, '-ac', '1', '-ar', str(SAMPLE_RATE),
+                        out_file], check=True)
         os.remove(listfile)
 
         # lrcPosition 按各句真实时长累加。注意用缓存 wav 的时长，
-        # 不是去解析拼好的 mp3 —— mp3 编码会有几毫秒的帧对齐误差，
+        # 不是去解析拼好的音频 —— 编码会有几毫秒的帧对齐误差，
         # 但累加误差在一篇里可以忽略，而且前端播完就 pause，不影响。
         lrc, t = [], 0.0
         for p in parts:
@@ -284,11 +337,11 @@ def main():
             lrc.append([round(t, 2), round(t + d, 2)])
             t += d + args.gap
 
-        article['audioSrc'] = f'/audio/{en_name}/{idx}.mp3'
+        article['audioSrc'] = f'/audio/{en_name}/{idx}.{codec["ext"]}'
         article['lrcPosition'] = lrc
-        size = os.path.getsize(mp3)
+        size = os.path.getsize(out_file)
         total_bytes += size
-        real = duration(mp3)
+        real = duration(out_file)
         # 拼出来的时长应该和累加的差不多，差太多说明有句子没拼进去
         drift = abs(real - (t - args.gap))
         flag = '  ⚠ 时长不符' if drift > 1.0 else ''

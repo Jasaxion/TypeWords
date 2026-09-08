@@ -102,9 +102,31 @@ python3 scripts/deploy-article-dicts.py --audio-dir /tmp/twaudio/xxx
 python3 scripts/deploy-article-dicts.py --file /tmp/twout/en/article/xxx.json --name "..."
 ```
 
-规模参考：三个自建文章库合计 6440 句 / 65 万字符 ≈ 12 小时音频、
-32kbps 下约 164MB，2 并发约 1.5 小时。想先试效果就挑最小的库
-（`life-science-read`，649 句，约 10 分钟、19MB）。
+规模参考：三个自建文章库合计 6440 句 / 65 万字符 ≈ 12 小时音频，
+默认 opus 24k 下约 **124MB**（同音质的 mp3 要 250MB），2 并发约 1.5 小时。
+想先试效果就挑最小的库（`life-science-read`，649 句，约 10 分钟、14MB）。
+
+### 为什么默认 opus 而不是 mp3
+
+同一段 26 秒朗读，和源 wav 比梅尔谱距离（越小越接近源）：
+
+| 编码 | 体积（12h 折算） | 梅尔距离 |
+|---|---|---|
+| opus 24k | 124 MB | **3.20** |
+| mp3 48k | 247 MB | 3.20 |
+| opus 16k | 82 MB | 3.58 |
+| mp3 32k | 165 MB | 7.15 |
+| mp3 24k | 124 MB | 18.85 |
+
+即**同音质省一半体积，同体积音质好一倍**。mp3 在低码率崩掉是因为 LAME 会硬性
+低通（32k 时切在 ~11kHz），opus 本来就是为语音设计的。跳句精度也验过，
+opus 各码率 envelope 相关 0.97~0.999，和 mp3 一个水平，不影响
+`audio.currentTime = start` 定位。
+
+兼容性是唯一代价：Safari 要 **17.5+**（macOS Sonoma / iOS 17.5+）才支持
+ogg-opus，Chrome/Firefox/Edge 一直支持。要照顾更老的 Safari 就 `--codec mp3`。
+
+合成用的采样率也从 24k 降到 16k（朗读够用，接口的 `sample_rate` 参数是真生效的）。
 
 ### 这里的坑比别处多
 
@@ -112,12 +134,16 @@ python3 scripts/deploy-article-dicts.py --file /tmp/twout/en/article/xxx.json --
   而且运行时替换同名文件会被按**旧 size 截断**。走运行时挂载路由
   `server/routes/audio/[...path].get.ts`（`AUDIO_PATH`，compose 里挂
   `AUDIO_DIR`），和 `dicts/` 一个套路。
-- **那个路由必须支持 HTTP Range，而且 mp3 必须是 CBR。** 前端跳句是
-  `audio.currentTime = start`：没有 Range，每次跳句都要下整个文件（最长的一篇
-  68 分钟）；VBR 的话按字节偏移估时间会跳错位置。脚本用 `-b:a` 不用 `-q:a`。
+- **那个路由必须支持 HTTP Range。** 前端跳句是 `audio.currentTime = start`：
+  没有 Range，每次跳句都要下整个文件（最长的一篇 68 分钟）。
+- **mp3 必须是 CBR**（用 `-b:a` 不是 `-q:a`），否则按字节偏移估时间会跳错位置。
+  opus 不受这个限制。
+- **接口只认 `sample_rate`，不认 `format`。** 传 `format=mp3`/`audio_format=mp3`
+  都被静默忽略、照样返回 WAV。压缩只能在本地转。
 - **`lrcPosition` 的顺序必须和前端切句顺序完全一致** —— `text` 按 `\n\n` 分段、
   段内按 `\n` 分句、展平后逐个对应。错位了页面**不报错**，只是每句念的是别的
   句子。所以脚本里的切分逻辑是照抄前端的，别"优化"。
+- **改了采样率/编码要清缓存吗？** 不用，缓存 key 里带了采样率，换了自动重合成。
 - **模型名写错的报错会误导你。** 走 websocket（`dashscope.audio.tts_v2`）时，
   如果模型名不在网关的模型列表里，请求会落到 cosyvoice 引擎，然后**所有**音色名
   都报 `Engine error [411]` —— 看着像音色名不对，其实是模型名不对。

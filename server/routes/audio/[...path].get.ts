@@ -26,7 +26,9 @@ const SAFE_NAME = /^[A-Za-z0-9._-]+\.(mp3|m4a|ogg|wav)$/
 const MIME: Record<string, string> = {
   mp3: 'audio/mpeg',
   m4a: 'audio/mp4',
-  ogg: 'audio/ogg',
+  // 带上 codecs=opus：合成脚本默认产出的就是 ogg 容器里的 opus，
+  // 裸 audio/ogg 会让部分浏览器按 vorbis 去猜、canPlayType 返回空串。
+  ogg: 'audio/ogg; codecs=opus',
   wav: 'audio/wav',
 }
 

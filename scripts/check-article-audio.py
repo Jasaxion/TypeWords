@@ -123,7 +123,7 @@ def main():
 
             # 3) 音频文件在不在、时长和时间轴末尾对不对得上
             if args.audio:
-                # audioSrc 形如 /audio/<enName>/<idx>.mp3
+                # audioSrc 形如 /audio/<enName>/<idx>.ogg（或 .mp3）
                 local = os.path.join(args.audio, *src.strip('/').split('/')[1:])
                 if not os.path.exists(local):
                     print(f'  [FAIL] [{idx}] 音频不存在: {local}')

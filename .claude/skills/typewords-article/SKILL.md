@@ -282,12 +282,15 @@ bair.berkeley.edu（超时）。
 所以抓来的网页文章**默认**没有朗读音频，句子发音只能是浏览器 TTS。想改善有两条路：
 
 1. **云端 TTS 合成**（已在做）：`scripts/synth-article-audio.py` 用
-   `qwen3-tts-flash` 逐句合成，拼成每篇一个 MP3，同时写回 `audioSrc` +
+   `qwen3-tts-flash` 逐句合成，拼成每篇一个音频文件，同时写回 `audioSrc` +
    `lrcPosition` 到词库 json，前端就能像官方新概念那样播真实音频。
-   用法见 `scripts/README.md`。**产出的音频走运行时挂载路由 `/audio/*`
-   （`server/routes/audio/[...path].get.ts`），不放 `public/sound/`** ——
-   那是构建输入，放进去每加一篇文章都要重建镜像，且运行时替换会被按旧 size
-   截断。
+   用法见 `scripts/README.md`。两个要点：
+   - **产出走运行时挂载路由 `/audio/*`**（`server/routes/audio/[...path].get.ts`），
+     **不放 `public/sound/`** —— 那是构建输入，放进去每加一篇文章都要重建镜像，
+     且运行时替换会被按旧 size 截断。
+   - **默认 opus 24k @16kHz**，同音质比 mp3 省一半体积（12 小时约 124MB）。
+     mp3 低码率会被 LAME 硬性低通，实测 32k 的梅尔谱距离比 opus 24k 差一倍多。
+     代价是 Safari 要 17.5+，更老的加 `--codec mp3`。
 2. **设置里换更自然的系统声色** —— 治标，音色还是浏览器 TTS。
 
 **顺便：怎么分辨某个词是真人录音还是机器合成** —— 按 mp3 字节数。真人录音
