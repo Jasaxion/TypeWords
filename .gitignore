@@ -36,6 +36,8 @@ localdata
 /data/
 # 官方词典数据，约 430MB，用 scripts/fetch-dicts.py 下载，不进仓库
 /dicts/
+# 自建文章库的朗读音频，约 160MB，用 scripts/synth-article-audio.py 合成，不进仓库
+/audio/
 # Misc
 .fleet
 

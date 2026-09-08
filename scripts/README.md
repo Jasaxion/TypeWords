@@ -13,6 +13,8 @@ export TW_SSH="-p 40022 root@192.168.1.10"   # ssh 参数，或配好 ~/.ssh/con
 export TW_REMOTE=/path/to/TypeWords          # 远端仓库路径
 export TW_OWNER=1000:1001                    # 容器的 uid:gid，查法：docker exec <容器> id
 export TW_BASE=http://127.0.0.1:3000         # check-live-dicts.py 用
+export TW_TTS_KEY=sk-...                     # synth-article-audio.py 用
+export TW_TTS_URL=https://<网关>/api/v1/services/aigc/multimodal-generation/generation
 ```
 
 `TW_OWNER` 必须和容器一致。ssh 进去是 root，写出来的文件是 `root:root 0600`，
@@ -66,6 +68,62 @@ python3 scripts/check-live-dicts.py
 
 第 5 步在**部署机上**跑最快 —— 几百个词库要逐个下载，走局域网可能几分钟都跑不完，
 走 `127.0.0.1` 一分钟出结果。但那是一次 `curl`，不是在部署机上跑构建。
+
+## 朗读音频（可选，但抓来的文章不做就是机器音）
+
+官方的新概念英语自带真人配音 mp3 + 逐句时间轴，所以听着正常。自己抓的文章没有
+这份数据，前端会把**整句**丢进有道的**单词**接口，那接口不接整句、返回 120 字节
+空响应，于是回退到浏览器 `speechSynthesis` —— 就是那个机械嗓子。
+
+`synth-article-audio.py` 用云端 TTS 逐句合成、每篇拼一个 mp3，并把
+`audioSrc` + `lrcPosition` 写回词库 json：
+
+```bash
+export TW_TTS_KEY=sk-...
+# 私有网关再给这两个（默认走 dashscope 公网地址）
+export TW_TTS_URL=https://<网关>/api/v1/services/aigc/multimodal-generation/generation
+export TW_TTS_MODEL=qwen3-tts-flash
+
+# 0. 换网关/换模型后先确认音色表还对
+python3 scripts/synth-article-audio.py --dict <json> --list-voices
+
+# 1. 先 dry-run 看规模（句数/时长/体积/耗时）
+python3 scripts/synth-article-audio.py --dict /tmp/twout/en/article/xxx.json --dry-run
+
+# 2. 合成（按句缓存，中断后重跑只补缺的）
+python3 scripts/synth-article-audio.py --dict /tmp/twout/en/article/xxx.json \
+    --voice Ethan --out /tmp/twaudio
+
+# 3. 自查：时间轴条数/单调性/末尾是否超出音频长度，以及线上 Range
+python3 scripts/check-article-audio.py /tmp/twout/en/article/xxx.json --audio /tmp/twaudio
+
+# 4. 传音频（运行时挂载，不用 --rebuild）+ 传改过的 json
+python3 scripts/deploy-article-dicts.py --audio-dir /tmp/twaudio/xxx
+python3 scripts/deploy-article-dicts.py --file /tmp/twout/en/article/xxx.json --name "..."
+```
+
+规模参考：三个自建文章库合计 6440 句 / 65 万字符 ≈ 12 小时音频、
+32kbps 下约 164MB，2 并发约 1.5 小时。想先试效果就挑最小的库
+（`life-science-read`，649 句，约 10 分钟、19MB）。
+
+### 这里的坑比别处多
+
+- **音频不能放 `public/sound/`。** 那是构建输入，进了镜像每加一篇文章都要重建，
+  而且运行时替换同名文件会被按**旧 size 截断**。走运行时挂载路由
+  `server/routes/audio/[...path].get.ts`（`AUDIO_PATH`，compose 里挂
+  `AUDIO_DIR`），和 `dicts/` 一个套路。
+- **那个路由必须支持 HTTP Range，而且 mp3 必须是 CBR。** 前端跳句是
+  `audio.currentTime = start`：没有 Range，每次跳句都要下整个文件（最长的一篇
+  68 分钟）；VBR 的话按字节偏移估时间会跳错位置。脚本用 `-b:a` 不用 `-q:a`。
+- **`lrcPosition` 的顺序必须和前端切句顺序完全一致** —— `text` 按 `\n\n` 分段、
+  段内按 `\n` 分句、展平后逐个对应。错位了页面**不报错**，只是每句念的是别的
+  句子。所以脚本里的切分逻辑是照抄前端的，别"优化"。
+- **模型名写错的报错会误导你。** 走 websocket（`dashscope.audio.tts_v2`）时，
+  如果模型名不在网关的模型列表里，请求会落到 cosyvoice 引擎，然后**所有**音色名
+  都报 `Engine error [411]` —— 看着像音色名不对，其实是模型名不对。
+  OpenAI 兼容的 `/audio/speech` 在私有网关上直接 404。能用的是 DashScope 原生
+  HTTP 的 `multimodal-generation` 路径。
+- **网关限流很紧**，实测 4 路并发一半是 `Throttling.RateQuota`，2 路稳定。
 
 ## 踩过的坑
 

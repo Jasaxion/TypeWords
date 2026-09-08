@@ -30,6 +30,10 @@
     # ...每个词库一条，最后统一重新构建
     python3 scripts/deploy-article-dicts.py --rebuild
 
+    # 朗读音频（synth-article-audio.py 的产出）。运行时挂载，不用 --rebuild，
+    # 但改过的词库 json 要一起传，因为 audioSrc/lrcPosition 写在里面
+    python3 scripts/deploy-article-dicts.py --audio-dir /tmp/twaudio/ted-spoken
+
 **重建已在学的词库前先看进度**：lastLearnIndex 是位置下标，词序一变
 进度就指向别的词。查 data/typing-word-dict 里对应 enName 是不是 0。
 """
@@ -93,6 +97,43 @@ def upload(local, remote_name, kind='article'):
     return '\n'.join(l for l in r.stdout.splitlines() if 'tmux' not in l)
 
 
+def upload_audio(local_dir, en_name):
+    """
+    传一个文章库的朗读音频目录（synth-article-audio.py 的产出）。
+
+    和词库 json 一样走 tar 管道、传完就 chown —— 音频是运行时挂载的
+    （server/routes/audio/[...path].get.ts），不用重新构建镜像。
+
+    不要把音频放进 public/sound/：那是构建输入，进了镜像每加一篇文章
+    都要重新构建，而且运行时替换同名文件会被按旧 size 截断。
+    """
+    if not os.path.isdir(local_dir):
+        sys.exit(f'音频目录不存在: {local_dir}')
+    files = sorted(f for f in os.listdir(local_dir) if f.endswith('.mp3'))
+    if not files:
+        sys.exit(f'{local_dir} 里没有 mp3')
+    total = sum(os.path.getsize(os.path.join(local_dir, f)) for f in files)
+    print(f'音频 {len(files)} 个文件 {total / 1024 / 1024:.0f} MB -> {en_name}/')
+
+    env = dict(os.environ, COPYFILE_DISABLE='1')
+    tar = subprocess.Popen(
+        ['tar', 'czf', '-', '-C', os.path.dirname(os.path.abspath(local_dir)),
+         os.path.basename(os.path.abspath(local_dir))],
+        stdout=subprocess.PIPE, env=env, stderr=subprocess.DEVNULL)
+    dest = f'{REMOTE}/audio'
+    r = subprocess.run(
+        NAS + [f'mkdir -p {dest} && tar xzf - -C {dest} && '
+               f'chown -R {OWNER} {dest}/{en_name} && '
+               f'chmod -R u+rw,go+rX {dest}/{en_name} && '
+               f'du -sh {dest}/{en_name} && ls {dest}/{en_name} | wc -l'],
+        stdin=tar.stdout, text=True, capture_output=True)
+    tar.stdout.close()
+    tar.wait()
+    if r.returncode:
+        sys.exit(f'音频传输失败: {r.stderr.strip()}')
+    return '\n'.join(l for l in r.stdout.splitlines() if 'tmux' not in l)
+
+
 
 def add_manifest(en_name, name, category, tags, length, kind='article'):
     """
@@ -137,7 +178,16 @@ def main():
     ap.add_argument('--tags', nargs='+', default=['文章学习'])
     ap.add_argument('--rebuild', action='store_true',
                     help='重新构建镜像并重启（清单是构建输入，加完条目必须跑一次）')
+    ap.add_argument('--audio-dir',
+                    help='朗读音频目录（synth-article-audio.py 的 <out>/<enName>）。'
+                         '音频是运行时挂载，传完不用 --rebuild')
     args = ap.parse_args()
+
+    if args.audio_dir:
+        en_name = os.path.basename(os.path.abspath(args.audio_dir))
+        print(upload_audio(args.audio_dir, en_name))
+        print('音频是运行时挂载，不用 --rebuild。'
+              '但词库 json 里的 audioSrc/lrcPosition 也要一起传（--file）')
 
     if args.file:
         if not args.name:

@@ -49,6 +49,9 @@ services:
       STORAGE_PATH: /app/localdata
       # 外部词典目录，与下面的挂载点保持一致（见 scripts/fetch-dicts.py）
       DICTS_PATH: /app/dicts
+      # 自建文章库的朗读音频目录，与下面的挂载点保持一致
+      # （见 scripts/synth-article-audio.py）
+      AUDIO_PATH: /app/audio
       # 切勿设置 HOST：nitro 会把它当作监听地址，容器内会启动失败
       PORT: "3000"
     volumes:
@@ -60,6 +63,11 @@ services:
       # 用 scripts/fetch-dicts.py 下载到这里，只读挂载即可。
       # 目录不存在或为空时自动回落到镜像内置的词典，不影响启动。
       - ${DICTS_DIR:-./dicts}:/app/dicts:ro
+      # 自建文章库的朗读音频（约 160MB，同样不进 git 也不进镜像）。
+      # 抓来的网页文章没有真人配音，句子发音会回退到浏览器 TTS（机械音）；
+      # 用 scripts/synth-article-audio.py 合成后放到这里就能播真实音频。
+      # 目录不存在或为空时不影响启动，只是继续用浏览器 TTS。
+      - ${AUDIO_DIR:-./audio}:/app/audio:ro
     ports:
       - "${TYPEWORDS_PORT:-3000}:3000"
 
