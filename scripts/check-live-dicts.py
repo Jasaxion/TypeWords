@@ -9,13 +9,16 @@ nce1 有 72 篇、页面上只有 5 篇，而两个请求都是 200。
 
 单看状态码查不出这类问题，必须比数量。
 
-用法（在 NAS 上跑，或本机跑改 --base）：
-    python3 scripts/check-live-dicts.py
-    python3 scripts/check-live-dicts.py --base http://192.168.1.10:58296
+用法（在部署机上跑最快 —— 几百个词库要逐个下载，走局域网可能几分钟都跑不完，
+走 127.0.0.1 一分钟出结果）：
+    python3 scripts/check-live-dicts.py                      # 默认 127.0.0.1:3000
+    python3 scripts/check-live-dicts.py --base http://192.168.1.10:8080
+    TW_BASE=http://127.0.0.1:8080 python3 scripts/check-live-dicts.py
 """
 
 import argparse
 import json
+import os
 import sys
 import urllib.request
 
@@ -27,7 +30,8 @@ def get(base, path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--base', default='http://127.0.0.1:58296')
+    ap.add_argument('--base', default=os.environ.get('TW_BASE', 'http://127.0.0.1:3000'),
+                    help='站点根地址，也可用 TW_BASE 环境变量')
     ap.add_argument('--mine', nargs='*',
                     default=['ai-ml', 'life-science', 'spoken-daily',
                              'ted-spoken', 'ai-reading', 'life-science-read'],

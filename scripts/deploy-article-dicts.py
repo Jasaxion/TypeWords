@@ -5,10 +5,10 @@
 拆成脚本而不是每次现敲命令，因为这套流程有四个容易漏的点，
 漏任何一个页面上都是「词库点开是空的」或者「篇数不对」：
 
-1. 传文件不能用 scp —— NAS 的 shell 会打一行 tmux 横幅，把 scp 协议搞乱。
-   用 tar 管道。
-2. 传上去的文件是 root:root 0600，容器里跑的是 uid=1000 gid=1001，读不到。
-   必须 chown 1000:1001 + chmod go+rX。
+1. 传文件不能用 scp —— 远端 shell 只要打了横幅（tmux 之类）就会把 scp
+   协议搞乱，表现是 exit 0 但内容是旧的。用 tar 管道。
+2. 传上去的文件是 root:root 0600，容器里跑的不是 root，读不到。
+   必须 chown 成容器的 uid:gid（`TW_OWNER`）+ chmod go+rX。
 3. 清单 public/list/{article,word}.json 是**构建输入**（nitro 在构建时扫
    public/ 生成静态资源索引），加了条目必须重新构建镜像，重启容器不够。
    而 dicts/ 是运行时挂载，换文件不用重启。
@@ -16,6 +16,10 @@
    照抄之前打印的数字会对不上。所以这里从文件现读。
 
 用法（先跑 check-article-dict.py 确认没问题）：
+    export TW_SSH="-p 40022 root@192.168.1.10"   # 你的部署机
+    export TW_REMOTE=/path/to/TypeWords
+    export TW_OWNER=1000:1001                    # 容器的 uid:gid，见下
+
     python3 scripts/deploy-article-dicts.py \\
         --file /tmp/twout/en/article/ted-spoken.json \\
         --name "TED 日常口语" --category 口语 --tags TED
@@ -36,8 +40,24 @@ import os
 import subprocess
 import sys
 
-NAS = ['ssh', '-p', '40022', '-o', 'ConnectTimeout=15', 'root@192.168.1.10']
-REMOTE = '/path/to/TypeWords'
+# 部署目标从环境变量读，不写死在仓库里。
+#   TW_SSH     ssh 目标，形如 "-p 40022 root@192.168.1.10" 或就一个 "myhost"
+#              （配好 ~/.ssh/config 的话）
+#   TW_REMOTE  远端仓库路径
+#   TW_OWNER   容器里跑的 uid:gid。**必须和容器一致**，否则文件属主不对、
+#              容器读不到，页面上表现为「词库点开是空的」。
+#              查法：docker exec <容器> id
+SSH_ARGS = os.environ.get('TW_SSH', '').split()
+REMOTE = os.environ.get('TW_REMOTE', '')
+OWNER = os.environ.get('TW_OWNER', '1000:1000')
+
+if not SSH_ARGS or not REMOTE:
+    sys.exit('请先设置 TW_SSH 和 TW_REMOTE，例如：\n'
+             '  export TW_SSH="-p 40022 root@192.168.1.10"\n'
+             '  export TW_REMOTE=/path/to/TypeWords\n'
+             '  export TW_OWNER=1000:1001   # 可选，默认 1000:1000')
+
+NAS = ['ssh', '-o', 'ConnectTimeout=15'] + SSH_ARGS
 
 
 def run(cmd, **kw):
@@ -60,10 +80,10 @@ def upload(local, remote_name, kind='article'):
         ['tar', 'czf', '-', '-C', os.path.dirname(local), os.path.basename(local)],
         stdout=subprocess.PIPE, env=env, stderr=subprocess.DEVNULL)
     dest = f'{REMOTE}/dicts/en/{kind}'
-    # 解包后立刻修好属主和权限：容器是 uid=1000 gid=1001，root:root 0600 读不到
+    # 解包后立刻修好属主和权限：容器不是 root，root:root 0600 读不到
     r = subprocess.run(
         NAS + [f'mkdir -p {dest} && tar xzf - -C {dest} && '
-               f'cd {dest} && chown 1000:1001 {remote_name} && '
+               f'cd {dest} && chown {OWNER} {remote_name} && '
                f'chmod u+rw,go+r {remote_name} && ls -l {remote_name}'],
         stdin=tar.stdout, text=True, capture_output=True)
     tar.stdout.close()
@@ -71,6 +91,7 @@ def upload(local, remote_name, kind='article'):
     if r.returncode:
         sys.exit(f'传输失败: {r.stderr.strip()}')
     return '\n'.join(l for l in r.stdout.splitlines() if 'tmux' not in l)
+
 
 
 def add_manifest(en_name, name, category, tags, length, kind='article'):

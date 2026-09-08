@@ -13,7 +13,6 @@
 重建命令（`$(tr '\n' ' ' < ...)` 把清单展开成参数）：
 
 ```bash
-cd /Users/zhanshaoxiong.3/Desktop/tmp-app/TypeWords-fork/TypeWords
 S=scripts/make-article-dict.py
 
 python3 $S --name "TED 日常口语" --en-name ted-spoken --category 口语 --tags TED \
@@ -33,7 +32,7 @@ python3 $S --name "生命科学科普" --en-name life-science-read --category �
 并发会连续几百句全失败、产出空译文却看起来成功了。
 
 `--no-manifest` 是必须的：仓库里的 `public/list/article.json` 只是上游的占位文件，
-真正的清单在 NAS 上。详见 `~/.claude/skills/typewords-article/SKILL.md`。
+真正的清单在部署环境上。详见 `.claude/skills/typewords-article/SKILL.md`。
 
 篇数/句数会随过滤规则变化，**不要把某次的数字当成基准** ——
 清单里的 `length` 一律由 `scripts/deploy-article-dicts.py` 从生成的 json 现读。
@@ -42,19 +41,24 @@ python3 $S --name "生命科学科普" --en-name life-science-read --category �
 
 ## 单词词表
 
-`wordlists/` 不在这个仓库里 —— 词表和 ECDICT 都只在 NAS 上
-（`/path/to/TypeWords/wordlists/`），因为本机的 `dicts/` 是空的，
-建词库需要那 244 个官方词库当数据源。重建：
+`wordlists/*.txt` 是 `harvest-terms.py` 从真实语料统计出来的词表。建词库需要
+两个数据源，仓库里都不带：
+
+- **官方词库**：`python3 scripts/fetch-dicts.py --dest dicts` 下载（仓库里的
+  `dicts/` 是空的）
+- **ECDICT**：一个 63MB 的 csv，`--ecdict` 显式给路径
 
 ```bash
-ssh -p 40022 root@192.168.1.10 'cd /path/to/TypeWords && \
-  python3 scripts/build-word-dict.py --words wordlists/ai-ml.txt \
+python3 scripts/build-word-dict.py --words wordlists/ai-ml.txt \
     --name "AI 与机器学习" --en-name ai-ml --category 专业领域 --tags 人工智能 \
-    --ecdict ../build-cache/ecdict.csv'
+    --ecdict path/to/ecdict.csv --dry-run
 ```
 
-`--ecdict` 必须显式给：ECDICT 在**仓库的上一级**，不是脚本默认的 `<repo>/build-cache/`。
-建完 `chown 1000:1001` + `chmod go+r`，否则容器读不到。
+先 `--dry-run` 看命中率，低于 50% 脚本自己会报错退出（通常是词表写错了）。
+
+**注意 `--ecdict` 默认是 `<repo>/build-cache/`**，csv 放在别处就必须显式给路径。
+词库文件如果是以 root 身份写的，建完要 `chown` 成容器的 uid:gid，否则容器读不到
+（表现为页面上词库点开是空的）。
 
 ## 改了过滤规则怎么办
 
@@ -70,7 +74,7 @@ python3 scripts/check-article-dict.py   /tmp/twout/en/article/*.json
 它从 `text` 和 `textTranslate` 删掉**同一批下标**。影响切句的改动
 （`split_sentences`、`--max-sentence-chars`）它做不到，得按上面的命令重建。
 
-清理完**要重新部署**：`deploy-article-dicts.py` 覆盖 NAS 上那份，
+清理完**要重新部署**：`deploy-article-dicts.py` 覆盖远端那份，
 否则本地干净、线上还是脏的（`dicts/` 是运行时挂载，不用 `--rebuild`）。
 
 判断某个库还有没有模板残留，数短行占比（少于 2 个英文单词的行），

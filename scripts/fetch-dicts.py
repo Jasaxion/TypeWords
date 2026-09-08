@@ -18,7 +18,7 @@
   python3 scripts/fetch-dicts.py --category 中国考试 国际考试
   python3 scripts/fetch-dicts.py --max-size 3     # 只要小于 3MB 的，省空间
   python3 scripts/fetch-dicts.py --list           # 只看清单，不下载
-  python3 scripts/fetch-dicts.py --dest /vol4/xxx # 指定目录（默认 ./dicts）
+  python3 scripts/fetch-dicts.py --dest /path/to/dicts  # 指定目录（默认 ./dicts）
 
 可反复运行：已存在且大小与服务端一致的文件会跳过，中断后重跑即可续传。
 """
